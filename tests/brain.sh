@@ -23,6 +23,8 @@ case "${CLAUDE_MODE:-ok}" in
     mkdir -p raw/digests && echo stray > raw/digests/extra.md
     echo '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.42,"result":"1 page"}' ;;
   fail)
+    mkdir -p wiki/topics; echo partial > wiki/topics/partial.md; echo partial >> index.md
+    printf '\n## [%s] ingest | n sessions\n' "$d" >> log.md
     echo '{"type":"result","subtype":"error_max_turns","is_error":true,"total_cost_usd":0.1}'; exit 1 ;;
   stray)
     echo "changed" >> sources.md; printf '\n## [%s] ingest | n\n' "$d" >> log.md
@@ -160,6 +162,7 @@ eq "failure: nothing marked" 0 "$(ingested)"
 eq "failure: alert names the class" 1 "$(grep -c 'brain: ingest failed on m1 (claude-error_max_turns-exit1)' "$HELD")"
 eq "failure: the spend still counts" "0.10" "$(python3 "$DIG" cost "$BR" month)"
 eq "failure: no commit" "$head0" "$(g rev-parse HEAD)"
+eq "failure: partial writes undone" "" "$(g status --porcelain)"
 
 # a write outside the wiki: refused, nothing marked
 rc="$(CLAUDE_MODE=stray job run)"
@@ -167,13 +170,22 @@ eq "stray write: non-zero exit" 1 "$([ "$rc" != 0 ] && echo 1 || echo 0)"
 eq "stray write: alert" 1 "$(grep -c '(stray-writes)' "$HELD")"
 eq "stray write: nothing marked" 0 "$(ingested)"
 eq "stray write: no commit" "$head0" "$(g rev-parse HEAD)"
-g checkout -q -- sources.md log.md
+eq "stray write: undone" "" "$(g status --porcelain)"
+
+# a hand edit in progress: the run waits, touching nothing
+echo "hand edit" >> "$BR/index.md"; echo note > "$BR/raw/notes/n1.md"
+rc="$(job run)"
+eq "dirty tree: refused" 1 "$([ "$rc" != 0 ] && echo 1 || echo 0)"
+eq "dirty tree: no claude" 0 "$(calls)"
+eq "dirty tree: the edit kept" 1 "$(grep -c '^hand edit$' "$BR/index.md")"
+g checkout -q -- index.md
 
 # success
 eq "success: exit 0" 0 "$(job run)"
 eq "success: claude called once" 1 "$(calls)"
 eq "success: commit message" "ingest: $(date +%F) 1 sessions" "$(g log -1 --format=%s)"
 eq "success: only the wiki, index and log committed" "index.md log.md wiki/topics/fixture.md" "$(g show --name-only --format= HEAD | sort | tr '\n' ' ' | sed 's/ $//')"
+eq "success: the dropped note is not committed and is kept" yes "$([ -f "$BR/raw/notes/n1.md" ] && [ -z "$(g ls-files raw/notes/n1.md)" ] && echo yes || echo no)"
 eq "success: raw never tracked" "raw/notes/.gitkeep" "$(g ls-files raw)"
 eq "success: pushed" "$(g rev-parse HEAD)" "$(git -C "$OR" rev-parse main)"
 eq "success: the queue marked" 1 "$(ingested)"
