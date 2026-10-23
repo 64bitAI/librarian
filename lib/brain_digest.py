@@ -42,18 +42,27 @@ _SPECIFIC = [
     re.compile(r"(?<![A-Za-z0-9])eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}"),
     re.compile(r"(?i)(?<=bearer )[A-Za-z0-9._~+/\-]{16,}=*"),
 ]
-# NAME=value / "name": "value" for credential-like names; the name is kept, the value masked.
+# NAME=value / "name": "value" for credential-like names; the name is kept, the value masked. Strong
+# names (password, token, api_key, ...) anywhere in the name; weak suffixes (_key, _pass, _pwd, _pw)
+# only after a _ or - (so monkey= and bypass= are not names), and then only for a value that looks
+# like one (below).
 _KV = re.compile(
     r"""(?ix)
-    (?P<k>["']?[A-Za-z0-9_\-]*(?:password|passwd|passphrase|secret|token|api[_\-]?key|apikey|access[_\-]?key|private[_\-]?key|client[_\-]?secret|auth[_\-]?key|credentials?)["']?)
+    (?P<k>["']?(?:
+        (?P<strong>[A-Za-z0-9_\-]*(?:password|passwd|passphrase|secret|token|api[_\-]?key|apikey|access[_\-]?key|private[_\-]?key|client[_\-]?secret|auth[_\-]?key|credentials?))
+       |(?P<weak>[A-Za-z0-9]+(?:[_\-][A-Za-z0-9]+)*[_\-](?:key|pass|pwd|pw))
+    )["']?)
     (?P<sep>\s*(?:=|:)\s*)
     (?P<q>["']?)
     (?P<v>[^\s"'&,;<>)\]}]+)
     """
 )
+_PASSWORDISH = re.compile(r"(?i)pass(?:word|wd|phrase)?$|pwd$|pw$")
 _HEX = re.compile(r"(?<![A-Za-z0-9])[0-9a-fA-F]{32,}(?![A-Za-z0-9])")
 _B64 = re.compile(r"(?<![A-Za-z0-9+/_\-])[A-Za-z0-9+/_]{32,}={0,2}(?![A-Za-z0-9+/_\-])")
-_CARD = re.compile(r"(?<![\d\-])(?:\d{13,19}|\d{4}(?:[ \-]\d{4}){2,3}(?:[ \-]\d{1,3})?)(?![\d\-])")
+# Card-like numbers: 13-19 digits in a run, 4-4-4-4 groups, and the Amex (4-6-5) and Diners (4-6-4)
+# layouts. Dates (2026-10-23) have too few digits to match.
+_CARD = re.compile(r"(?<![\d\-])(?:\d{13,19}|\d{4}(?:[ \-]\d{4}){2,3}(?:[ \-]\d{1,3})?|\d{4}[ \-]\d{6}[ \-]\d{4,5})(?![\d\-])")
 
 
 def _kv(m):
@@ -61,15 +70,29 @@ def _kv(m):
     if v == R or v.startswith("[REDACTED"):
         return m.group(0)
     sep = m.group("sep")
-    # "Token: the next step" is prose; a colon form needs a value that looks like one.
-    if ":" in sep and not (len(v) >= 8 and re.search(r"\d", v) and not re.fullmatch(r"[a-z]+", v)):
-        return m.group(0)
-    if "=" in sep and len(v) < 4:
-        return m.group(0)
+    name = (m.group("strong") or m.group("weak") or "").strip("\"'")
     # Placeholders and references, not values.
     if v.startswith(("$", "{{", "<", "%", "process.env", "os.environ", "env.")) or v.lower() in (
         "none", "null", "true", "false", "redacted", "xxx", "xxxx", "changeme", "example", "...",
     ):
+        return m.group(0)
+    if m.group("weak"):
+        # sort_key=name, cache_key=user.id, ssh_key=~/.ssh/id: identifiers and paths, not values.
+        # A _key value needs six characters and a digit or an inner capital, and no path separator.
+        # A password-like suffix (_pass, _pwd, _pw) takes any four characters.
+        if "/" in v or len(v) < 4:
+            return m.group(0)
+        if not _PASSWORDISH.search(name) and (len(v) < 6 or not (re.search(r"\d", v) or re.search(r".[A-Z]", v))):
+            return m.group(0)
+    elif ":" in sep:
+        # "Token: the next step" is prose; a colon form needs a value that looks like one. For a
+        # password-like name eight characters that are not one lowercase word are enough
+        # ("password: Sunflowers"); for the other names a digit is needed too.
+        if len(v) < 8 or re.fullmatch(r"[a-z]+", v):
+            return m.group(0)
+        if not _PASSWORDISH.search(name) and not re.search(r"\d", v):
+            return m.group(0)
+    elif len(v) < 4:
         return m.group(0)
     return m.group("k") + sep + m.group("q") + R
 
@@ -104,6 +127,43 @@ def strict(text):
         text = rx.sub(R, text)
     text = _KV.sub(_kv, text)
     return _CARD.sub(R, text)
+
+
+# Work material never enters the brain (its CLAUDE.md, Identity): a session whose project folder,
+# cwd or title, or a conversation whose account or title, matches BRAIN_EXCLUDE (one regular
+# expression, case-insensitive) gets no digest at all. The default names the owner's employer's
+# folders and forge; set BRAIN_EXCLUDE in the swarm's .env to replace it.
+EXCLUDE_DEFAULT = r"employerco|(?<![a-z0-9])wrk(?![a-z0-9])|gitea"
+
+
+def excluder():
+    rx = os.environ.get("BRAIN_EXCLUDE")
+    rx = EXCLUDE_DEFAULT if rx is None or not rx.strip() else rx
+    return re.compile(rx, re.I)
+
+
+def header_fields(text):
+    """The header values a digest's exclusion is decided on: title, project folder, cwd, account."""
+    out = []
+    for line in text.split("\n", 12)[:12]:
+        for k in ("- title: ", "- project folder: ", "- cwd: ", "- account: "):
+            if line.startswith(k):
+                out.append(line[len(k):])
+    return out
+
+
+def excluded(rx, text, *extra):
+    return any(rx.search(f) for f in list(extra) + header_fields(text) if f)
+
+
+def drop_digest(brain, index, rel):
+    """A digest that is now excluded goes, file and index entry, so it is never queued."""
+    if rel in index:
+        del index[rel]
+    try:
+        os.remove(os.path.join(brain, rel))
+    except OSError:
+        pass
 
 
 def cap(text):
@@ -297,6 +357,7 @@ def cmd_digest(brain):
     index = load(os.path.join(sd, "digests.json"), {})
     stats = Counter()
     largest = 0
+    rx = excluder()
     cc = os.path.join(brain, "raw", "chats", "claude-code")
     for root, dirs, files in os.walk(cc):
         dirs.sort()
@@ -330,6 +391,11 @@ def cmd_digest(brain):
                 stats["empty"] += 1
                 done[key] = sig
                 continue
+            if excluded(rx, text, host, project):
+                stats["excluded"] += 1
+                drop_digest(brain, index, rel)
+                done[key] = sig
+                continue
             text = cap(mask(text))
             write_digest(brain, rel, text)
             index[rel] = {"first": first, "last": last, "chars": len(text), "sha": sha(text), "source": key}
@@ -361,8 +427,12 @@ def cmd_digest(brain):
             if n == 0:
                 stats["empty"] += 1
                 continue
-            text = cap(mask(text))
             rel = os.path.join("raw", "digests", "claude-ai", account, re.sub(r"[^A-Za-z0-9_\-]", "_", conv["uuid"]) + ".md")
+            if excluded(rx, text, account):
+                stats["excluded"] += 1
+                drop_digest(brain, index, rel)
+                continue
+            text = cap(mask(text))
             old = index.get(rel)
             if old and old.get("sha") == sha(text):
                 continue
