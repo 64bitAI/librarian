@@ -1,0 +1,11 @@
+# The brain's nightly ingest on Linux (scripts/brain-ingest.sh). Template: scripts/brain-ingest.sh install.
+[Unit]
+Description=Swarm brain ingest [${SWARM_UNIT_PREFIX}]
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=SWARM_NAME=${SWARM_NAME:-}
+ExecStart=/bin/bash ${SWARM_REPO}/scripts/brain-ingest.sh run
+StandardOutput=append:${SWARM_STATE_DIR}/backups/brain-ingest.log
+StandardError=append:${SWARM_STATE_DIR}/backups/brain-ingest.log

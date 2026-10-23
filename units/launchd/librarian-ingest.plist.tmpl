@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The brain's nightly ingest (scripts/brain-ingest.sh). Template: scripts/brain-ingest.sh install renders it into
+  ~/Library/LaunchAgents/<prefix>.brain-ingest.plist with SWARM_REPO set to this checkout.
+  Verify:  launchctl print gui/$(id -u)/<prefix>.brain-ingest
+  Run now: launchctl kickstart -p gui/$(id -u)/<prefix>.brain-ingest
+  (<prefix> is SWARM_UNIT_PREFIX, swarm-<name> unless the swarm's .env says otherwise)
+  Remove:  scripts/brain-ingest.sh uninstall
+  04:15 local, after the 03:30 backup. RunAtLoad is false so installing it does not fire a run.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${SWARM_UNIT_PREFIX}.brain-ingest</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>${SWARM_REPO}/scripts/brain-ingest.sh</string>
+        <string>run</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>${SWARM_REPO}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- launchd gives a minimal PATH; claude and git live in Homebrew or ~/.local/bin -->
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:${HOME}/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>SWARM_NAME</key>
+        <string>${SWARM_NAME:-}</string>
+    </dict>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>4</integer>
+        <key>Minute</key><integer>15</integer>
+    </dict>
+    <key>RunAtLoad</key><false/>
+    <key>StandardOutPath</key>
+    <string>${SWARM_STATE_DIR}/backups/brain-ingest.log</string>
+    <key>StandardErrorPath</key>
+    <string>${SWARM_STATE_DIR}/backups/brain-ingest.log</string>
+</dict>
+</plist>
