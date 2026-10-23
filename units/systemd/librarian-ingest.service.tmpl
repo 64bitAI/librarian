@@ -7,5 +7,7 @@ Type=oneshot
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=SWARM_NAME=${SWARM_NAME:-}
 ExecStart=/bin/bash ${SWARM_REPO}/scripts/brain-ingest.sh run
+# Stage A is bounded by BRAIN_LOCAL_MAX_SECONDS (an hour); the whole run never past two.
+TimeoutStartSec=2h
 StandardOutput=append:${SWARM_STATE_DIR}/backups/brain-ingest.log
 StandardError=append:${SWARM_STATE_DIR}/backups/brain-ingest.log

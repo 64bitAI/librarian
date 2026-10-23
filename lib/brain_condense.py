@@ -182,9 +182,10 @@ def render(meta, secs):
     lines.append("- condensed by: %s, %d chunk(s)" % (meta["model"], meta["chunks"]))
     for s in SECTIONS:
         lines += ["", "## " + s]
-        lines += ["- " + t for t in secs[s]] or ["- none"]
-    # The masker is the last word: a note never carries what a digest's masking would remove.
-    return "\n".join(bd.mask(l) for l in lines) + "\n"
+        # The masker is the last word on the model's lines: a note never carries what a digest's
+        # masking would remove. (The header above is the script's own, from paths.)
+        lines += ["- " + bd.mask(t) for t in secs[s]] or ["- none"]
+    return "\n".join(lines) + "\n"
 
 
 def condense_text(text, cfg, source="(stdin)", date="", where=""):

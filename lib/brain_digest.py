@@ -5,7 +5,7 @@
   brain_digest.py queue  BRAIN CHARS      digests not yet ingested, oldest first, within CHARS; one path per line
   brain_digest.py mark   BRAIN < paths    record those digests as ingested (their current content hash)
   brain_digest.py pending BRAIN           count and characters of digests not yet ingested
-  brain_digest.py cost   BRAIN add USD KIND N   append one run's spend to this month
+  brain_digest.py cost   BRAIN add USD KIND N   append one run's spend to this month (state/costs.json, tracked)
   brain_digest.py cost   BRAIN month      this month's spend in USD
   brain_digest.py cost   BRAIN alerted    exit 0 if this month's cap alert was already sent
   brain_digest.py cost   BRAIN set-alerted
@@ -14,7 +14,7 @@
 
 Digests are derived and gitignored: raw/digests/claude-code/<host>/<project>/<session>.md and
 raw/digests/claude-ai/<account>/<conversation>.md. State lives in raw/.state/ (digested.json,
-digests.json, ingested.json, costs.json). Nothing here prints digest contents.
+digests.json, ingested.json); the month's spend in state/costs.json, which the job commits. Nothing here prints digest contents.
 """
 import datetime
 import hashlib
@@ -337,6 +337,12 @@ def save(p, obj):
     os.replace(tmp, p)
 
 
+def save_tracked(p, obj):
+    """Like save, but readable (0644): the file is committed."""
+    save(p, obj)
+    os.chmod(p, 0o644)
+
+
 def write_digest(brain, rel, text):
     p = os.path.join(brain, rel)
     os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -494,9 +500,19 @@ def month():
     return os.environ.get("BRAIN_MONTH") or datetime.date.today().strftime("%Y-%m")
 
 
+def cost_path(brain):
+    return os.path.join(brain, "state", "costs.json")
+
+
 def cmd_cost(brain, args):
-    p = os.path.join(brain, "raw", ".state", "costs.json")
-    costs = load(p, {})
+    # Tracked in the brain (state/costs.json) and committed by the job, so the month's spend moves
+    # with the brain to whichever machine is primary; a first run starts from the old local record.
+    p = cost_path(brain)
+    costs = load(p, None)
+    if costs is None:
+        costs = load(os.path.join(brain, "raw", ".state", "costs.json"), {})
+    costs.setdefault(month(), {"usd": 0.0, "runs": [], "alerted": False})
+    m = costs[month()]
     m = costs.setdefault(month(), {"usd": 0.0, "runs": [], "alerted": False})
     op = args[0] if args else "month"
     if op == "add":
@@ -504,14 +520,14 @@ def cmd_cost(brain, args):
         m["usd"] = round(m["usd"] + usd, 6)
         m["runs"].append({"at": datetime.datetime.now().isoformat(timespec="seconds"), "usd": usd,
                           "kind": args[2] if len(args) > 2 else "ingest", "items": int(args[3]) if len(args) > 3 else 0})
-        save(p, costs)
+        save_tracked(p, costs)
     elif op == "month":
         print("%.2f" % m["usd"])
     elif op == "alerted":
         sys.exit(0 if m.get("alerted") else 1)
     elif op == "set-alerted":
         m["alerted"] = True
-        save(p, costs)
+        save_tracked(p, costs)
     else:
         sys.exit("unknown cost op")
 
