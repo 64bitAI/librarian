@@ -26,6 +26,10 @@ case "${CLAUDE_MODE:-ok}" in
     mkdir -p wiki/topics; echo partial > wiki/topics/partial.md; echo partial >> index.md
     printf '\n## [%s] ingest | n sessions\n' "$d" >> log.md
     echo '{"type":"result","subtype":"error_max_turns","is_error":true,"total_cost_usd":0.1}'; exit 1 ;;
+  secret)
+    mkdir -p wiki/topics; printf 'key %s\n' "sk-ant-api03-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB" > wiki/topics/leak.md
+    printf '\n## [%s] ingest | n sessions\n' "$d" >> log.md
+    echo '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.0}' ;;
   stray)
     echo "changed" >> sources.md; printf '\n## [%s] ingest | n\n' "$d" >> log.md
     echo '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.2}' ;;
@@ -113,12 +117,14 @@ eq "claude.ai conversation digested" 1 "$(grep -c '^- title: AI chat title$' "$D
 eq "claude.ai: both senders" 2 "$(grep -cE '^(Owner: AIOWNER|Claude: AICLAUDE)' "$D/claude-ai/acct1/c-1.md")"
 eq "huge session capped" 1 "$(grep -c 'characters omitted' "$D/claude-code/h1/-proj-c/huge.md")"
 eq "cap holds" 1 "$(wc -c < "$D/claude-code/h1/-proj-c/huge.md" | awk '{print ($1 <= 60100)}')"
-eq "digests are private" 600 "$(stat -f %Lp "$S1" 2>/dev/null || stat -c %a "$S1")"
+eq "digests are private" 600 "$(stat -c %a "$S1" 2>/dev/null || stat -f %Lp "$S1")"
 eq "the summary prints counts only" 0 "$(printf '%s\n' "$out" | grep -c 'OWNERPHRASE\|sk-')"
 out="$(python3 "$DIG" digest "$BR")"
 eq "second pass: nothing rewritten" 0 "$(printf '%s\n' "$out" | grep -c 'written_')"
 eq "masking keeps paths and folder names" "-Users-o-src-github-com-example-x /a/b/c/AcmeCo42/d/e/f/g" "$(printf '%s' '-Users-o-src-github-com-example-x /a/b/c/AcmeCo42/d/e/f/g' | python3 "$DIG" mask)"
 eq "masking: provider keys" "[REDACTED] [REDACTED] [REDACTED] [REDACTED]" "$(printf '%s' 'AKIAABCDEFGHIJKLMNOP ghp_abcdefghijklmnopqrstuvwxyz0123 xoxb-1234-5678-abcdefgh AIzaSyA1234567890abcdefghijklmnopqrstu' | python3 "$DIG" mask)"
+eq "scan: a commit hash in a page is not a secret" 0 "$(printf 'commit 0123456789abcdef0123456789abcdef01234567\n' | python3 "$DIG" scan >/dev/null; echo $?)"
+eq "scan: a key is" 1 "$(printf 'x sk-ant-api03-CCCCCCCCCCCCCCCCCCCCCCCC\n' | python3 "$DIG" scan >/dev/null; echo $?)"
 eq "masking: card-like numbers, not dates" "[REDACTED] 2026-10-23" "$(printf '%s' '4111 1111 1111 1111 2026-10-23' | python3 "$DIG" mask)"
 
 # --- the queue ----------------------------------------------------------------------------------
@@ -141,8 +147,8 @@ printf 'role=standby\nepoch=1\n' > "$SW/.role"
 eq "standby: exit 0" 0 "$(job run)"; eq "standby: no claude" 0 "$(calls)"
 printf 'role=primary\nepoch=1\n' > "$SW/.role"
 
-# the cap: $9.5 spent, one run up to $2, cap $10: skipped, alerted once a month
-python3 "$DIG" cost "$BR" add 9.5 ingest 0
+# the cap: $9.6 spent, cap $10, under $0.5 left: skipped, alerted once a month
+python3 "$DIG" cost "$BR" add 9.6 ingest 0
 eq "cap: exit 0" 0 "$(job run)"; eq "cap: no claude" 0 "$(calls)"
 eq "cap: one alert held" 1 "$(grep -c 'brain: ingest paused, monthly cap reached' "$HELD")"
 eq "cap: says so" 1 "$(grep -c 'ingest paused' "$TMP/out")"
@@ -171,6 +177,19 @@ eq "stray write: alert" 1 "$(grep -c '(stray-writes)' "$HELD")"
 eq "stray write: nothing marked" 0 "$(ingested)"
 eq "stray write: no commit" "$head0" "$(g rev-parse HEAD)"
 eq "stray write: undone" "" "$(g status --porcelain)"
+
+# a secret written into the wiki: refused, undone, nothing marked
+rc="$(CLAUDE_MODE=secret job run)"
+eq "secret in wiki: non-zero exit" 1 "$([ "$rc" != 0 ] && echo 1 || echo 0)"
+eq "secret in wiki: alert" 1 "$(grep -c '(secret-in-wiki)' "$HELD")"
+eq "secret in wiki: nothing marked" 0 "$(ingested)"
+eq "secret in wiki: no commit" "$head0" "$(g rev-parse HEAD)"
+eq "secret in wiki: the page removed" "" "$(g status --porcelain)"
+eq "secret in wiki: the key is not in the job's output" 0 "$(grep -c 'sk-ant' "$TMP/out")"
+echo keep > "$BR/raw/notes/during.md"
+CLAUDE_MODE=secret job run >/dev/null
+eq "rollback leaves raw/notes alone" yes "$([ -f "$BR/raw/notes/during.md" ] && echo yes || echo no)"
+rm -f "$BR/raw/notes/during.md"
 
 # a hand edit in progress: the run waits, touching nothing
 echo "hand edit" >> "$BR/index.md"; echo note > "$BR/raw/notes/n1.md"
@@ -203,7 +222,7 @@ eq "argv: allowed writes only under wiki/, index.md, log.md" \
   "Read,Glob,Grep,Edit(wiki/**),Write(wiki/**),Edit(index.md),Write(index.md),Edit(log.md),Write(log.md)" "$(grep -A1 -x -- '--allowedTools' "$CLOG" | tail -1)"
 eq "argv: headless, json, sonnet, dontAsk, no persistence" 5 "$(printf '%s\n' "$argv" | grep -o -- '-p \|--output-format json\|--model sonnet\|--permission-mode dontAsk\|--no-session-persistence' | wc -l | tr -d ' ')"
 eq "argv: a run ceiling" 1 "$(grep -c -x -- '--max-budget-usd' "$CLOG")"
-eq "argv: no user settings or MCP servers" 2 "$(grep -cx -- '--setting-sources\|--strict-mcp-config' "$CLOG")"
+eq "argv: restricted (file tools inside the brain, no settings files), no MCP servers" 2 "$(grep -cx -- '--restricted\|--strict-mcp-config' "$CLOG")"
 
 # the next run takes the next digests; status reports
 job run >/dev/null

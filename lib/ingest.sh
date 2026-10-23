@@ -15,7 +15,9 @@
 #   scripts/brain-ingest.sh status     last run, this month's spend against the cap, queue length
 #
 # Settings (the environment, then the swarm's .env): SWARM_BRAIN_DIR (required), BRAIN_INGEST_CHARS,
-# BRAIN_COST_CAP_USD, BRAIN_RUN_MAX_USD (one run's ceiling, default 2, passed as --max-budget-usd),
+# BRAIN_COST_CAP_USD, BRAIN_RUN_MAX_USD (one run's ceiling, default 2, passed as --max-budget-usd,
+# never more than what is left of the month), BRAIN_RUN_MIN_USD (below this remainder the month is
+# paused, default 0.5),
 # BRAIN_INGEST_MODEL (default sonnet), BRAIN_INGEST_TURNS (default 60).
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
@@ -28,6 +30,7 @@ BRAIN="$(envget SWARM_BRAIN_DIR)"
 CHARS="$(envget BRAIN_INGEST_CHARS 250000)"
 CAP="$(envget BRAIN_COST_CAP_USD 10)"
 RUNMAX="$(envget BRAIN_RUN_MAX_USD 2)"
+RUNMIN="$(envget BRAIN_RUN_MIN_USD 0.5)"
 MODEL="$(envget BRAIN_INGEST_MODEL sonnet)"
 TURNS="$(envget BRAIN_INGEST_TURNS 60)"
 umask 077
@@ -39,8 +42,10 @@ need_brain() {
 }
 # last_run RESULT [DETAIL]: one line for `status`.
 last_run() { mkdir -p "$BRAIN/raw/.state"; printf '%s %s\n' "$(date +%FT%T)" "$*" > "$BRAIN/raw/.state/last-run"; }
-# over_cap: true when this month's spend plus one run's ceiling would pass the cap.
-over_cap() { python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) + float(sys.argv[2]) > float(sys.argv[3]) + 1e-9 else 1)' "$1" "$RUNMAX" "$CAP"; }
+# over_cap SPENT: true when what is left of the month is under one useful run (BRAIN_RUN_MIN_USD).
+# A run's own budget is clamped to the remainder, so a run that starts cannot pass the cap by more
+# than claude's own overshoot of --max-budget-usd (it checks between turns).
+over_cap() { python3 -c 'import sys; sys.exit(0 if float(sys.argv[3]) - float(sys.argv[1]) < float(sys.argv[2]) - 1e-9 else 1)' "$1" "$RUNMIN" "$CAP"; }
 fail() { # fail CLASS: alert with the error class only, record it, exit non-zero
   log "ingest failed: $1"; last_run "failed $1"
   # After claude ran, its partial writes go: the tree was clean before (dirty-tree check), so
@@ -48,7 +53,7 @@ fail() { # fail CLASS: alert with the error class only, record it, exit non-zero
   if [ -n "${CLAUDE_RAN:-}" ]; then
     git checkout -q -- . 2>/dev/null || true
     git status --porcelain --untracked-files=all | grep -vxF -f <(printf '%s\n' "$before") | sed -n 's/^?? //p' \
-      | while IFS= read -r f; do rm -f -- "$f"; done || true
+      | grep '^wiki/' | while IFS= read -r f; do rm -f -- "$f"; done || true
     log "partial writes undone"
   fi
   matrix_alert "brain: ingest failed on $(envget SWARM_MACHINE "$(hostname -s)") ($1)" || true
@@ -114,7 +119,7 @@ if [ "$N" = 0 ]; then log "nothing new to ingest"; last_run "ok 0 sessions"; exi
 
 spent="$(python3 "$DIGEST" cost "$BRAIN" month)"
 if over_cap "$spent"; then
-  log "ingest paused: \$$spent spent this month, cap \$$CAP, one run up to \$$RUNMAX; $N digests wait"
+  log "ingest paused: \$$spent spent this month, cap \$$CAP, less than \$$RUNMIN left; $N digests wait"
   last_run "paused cap (\$$spent of \$$CAP)"
   if ! python3 "$DIGEST" cost "$BRAIN" alerted; then
     matrix_alert "brain: ingest paused, monthly cap reached (\$$spent of \$$CAP)" || true
@@ -162,7 +167,8 @@ When done, reply with one line: the number of pages created and updated.
 EOF
 }
 
-# Writes are confined twice: --tools offers no shell, and in dontAsk mode only the allowed rules run.
+# Confined three ways: --tools offers no shell; --restricted keeps the file tools (Read included)
+# inside the brain and loads no settings files or hooks; in dontAsk mode only the allowed rules run.
 ALLOW="Read,Glob,Grep,Edit(wiki/**),Write(wiki/**),Edit(index.md),Write(index.md),Edit(log.md),Write(log.md)"
 claude_env_words
 before="$(git status --porcelain --untracked-files=all)"
@@ -171,7 +177,7 @@ log "ingest: $N digests, $(python3 -c 'import sys,json,os; idx=json.load(open(os
 rc=0
 prompt | env "${CLAUDE_ENV[@]}" claude -p --no-session-persistence --output-format json --model "$MODEL" \
   --max-turns "$TURNS" --max-budget-usd "$budget" --permission-mode dontAsk \
-  --setting-sources project,local --strict-mcp-config \
+  --restricted --strict-mcp-config \
   --tools "Read,Write,Edit,Glob,Grep" --allowedTools "$ALLOW" > "$RESULT" 2> "$BRAIN/raw/.state/claude-stderr" || rc=$?
 
 # The spend counts whatever happened next: the money is gone.
@@ -194,6 +200,12 @@ log "claude: exit $rc, $subtype, \$$cost, stderr $(wc -l < "$BRAIN/raw/.state/cl
 stray="$(git status --porcelain --untracked-files=all | grep -vxF -f <(printf '%s\n' "$before") | sed 's/^...//' | grep -vE '^(wiki/|index\.md$|log\.md$)' || true)"
 [ -z "$stray" ] || { log "files outside wiki/, index.md, log.md changed: $(printf '%s\n' "$stray" | wc -l | tr -d ' ')"; fail "stray-writes"; }
 git diff HEAD -- log.md | grep -q "^+## \[$TODAY\] ingest" || fail "no-log-entry"
+# The last line of defence for "no secrets in the wiki": every added line, and every new page, goes
+# through the same masker as the digests; anything it would change stops the run (counts only).
+if ! { git diff HEAD -U0 -- wiki index.md log.md | sed -n 's/^+//p' | grep -v '^++ '
+       git ls-files --others --exclude-standard -z -- wiki | xargs -0 cat 2>/dev/null; } | python3 "$DIGEST" scan; then
+  fail "secret-in-wiki"
+fi
 
 git add -- wiki index.md log.md
 if git diff --cached --quiet; then log "nothing changed in the wiki"

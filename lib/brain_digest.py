@@ -10,6 +10,7 @@
   brain_digest.py cost   BRAIN alerted    exit 0 if this month's cap alert was already sent
   brain_digest.py cost   BRAIN set-alerted
   brain_digest.py mask   < text           mask secrets on stdin (for tests)
+  brain_digest.py scan   < text           exit 1 (printing a count only) if masking would change any line
 
 Digests are derived and gitignored: raw/digests/claude-code/<host>/<project>/<session>.md and
 raw/digests/claude-ai/<account>/<conversation>.md. State lives in raw/.state/ (digested.json,
@@ -93,6 +94,16 @@ def mask(text):
     text = _B64.sub(_b64, text)
     text = _CARD.sub(R, text)
     return text
+
+
+def strict(text):
+    """The high-confidence patterns only, for scanning wiki pages: no generic hex or base64 runs
+    (a 40-character commit hash in a page is not a secret)."""
+    text = _PEM.sub(R, text)
+    for rx in _SPECIFIC:
+        text = rx.sub(R, text)
+    text = _KV.sub(_kv, text)
+    return _CARD.sub(R, text)
 
 
 def cap(text):
@@ -441,6 +452,12 @@ def main(argv):
     op = argv[1]
     if op == "mask":
         sys.stdout.write(cap(mask(sys.stdin.read())))
+        return
+    if op == "scan":
+        n = sum(1 for line in sys.stdin.read().splitlines() if strict(line) != line)
+        if n:
+            print("%d line(s) look like secrets" % n)
+            sys.exit(1)
         return
     if len(argv) < 3:
         sys.exit(__doc__)
