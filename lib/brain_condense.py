@@ -1,26 +1,40 @@
 #!/usr/bin/env python3
-"""Stage A of the brain's ingest: each masked digest becomes a short condensed note, written by a
-local model through Ollama's HTTP API (no cost). Stdlib only; called by brain-ingest.sh and
-brain_compare.py.
+"""Stage A of the brain's ingest: each masked digest becomes a short condensed note, written by
+Claude (headless, one turn, no tools, from an empty temp dir) or by a local model through Ollama's
+HTTP API (no cost). Stdlib only; called by brain-ingest.sh and brain_compare.py.
 
   brain_condense.py condense BRAIN    condense pending digests (oldest first) that have no current
                                       note, until BRAIN_LOCAL_MAX_SECONDS; prints counts
   brain_condense.py queue BRAIN CHARS pending digests whose note is current, oldest first, until
                                       CHARS characters of notes (at least one); one digest path per line
+  brain_condense.py backend BRAIN     which writer the next note would get: claude, local or wait
   brain_condense.py note DIGEST       the note path for a digest path (relative to the brain)
-  brain_condense.py one FILE          condense one digest file to stdout (for checking by hand)
+  brain_condense.py one FILE          condense one digest file to stdout with the local model
 
-Settings (environment): BRAIN_LOCAL_URL (Ollama, e.g. http://127.0.0.1:11434), BRAIN_LOCAL_MODEL
-(default qwen2.5:14b-instruct), BRAIN_LOCAL_CHUNK_TOKENS (default 12000), BRAIN_LOCAL_MAX_SECONDS
-(default 3600). Notes live in raw/notes-condensed/ (gitignored, mode 600); their record is
-raw/.state/condensed.json (digest path to digest sha, model, note path, characters, seconds,
-chunks). A note is rebuilt when its digest's sha or the model changes. Nothing here prints a
-digest's or a note's contents.
+Which writer (BRAIN_CONDENSE): claude, local, or auto (default): Claude while this month's
+remainder (BRAIN_COST_CAP_USD, the cap brain-ingest.sh resolved for the month, less the month's
+spend) is at least BRAIN_CONDENSE_MIN_USD (1), else the local model. A note made locally while
+Claude is usable is not current, so it is redone with Claude when the money allows. Claude's spend
+is added to the month (state/costs.json, kind condense) after every call; one run starts no new
+Claude note after BRAIN_CONDENSE_RUN_USD (2) (the rest wait). claude mode never falls back: under
+the minimum, notes wait.
+
+Settings (environment): BRAIN_CONDENSE_MODEL (sonnet), BRAIN_CLAUDE_CHUNK_CHARS (60000),
+BRAIN_CONDENSE_CALL_MAX_USD (0.5: each call's --max-budget-usd, and what an unreadable result
+counts); BRAIN_LOCAL_URL (Ollama, e.g. http://127.0.0.1:11434), BRAIN_LOCAL_MODEL (default
+qwen2.5:14b-instruct), BRAIN_LOCAL_CHUNK_TOKENS (default 12000), BRAIN_LOCAL_MAX_SECONDS (default
+3600). Notes live in raw/notes-condensed/ (gitignored, mode 600), each with a "condensed-by: <model>"
+header line (claude:<model> for Claude); their record is raw/.state/condensed.json (digest path to
+digest sha, model, note path, characters, seconds, chunks, cost). Nothing here prints a digest's or
+a note's contents.
 """
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -69,11 +83,36 @@ def env(k, d):
 
 def settings():
     return {
+        "mode": env("BRAIN_CONDENSE", "auto").lower(),
         "url": env("BRAIN_LOCAL_URL", "http://127.0.0.1:11434").rstrip("/"),
         "model": env("BRAIN_LOCAL_MODEL", "qwen2.5:14b-instruct"),
         "chunk_tokens": int(env("BRAIN_LOCAL_CHUNK_TOKENS", "12000")),
         "max_seconds": float(env("BRAIN_LOCAL_MAX_SECONDS", "3600")),
+        "claude_model": env("BRAIN_CONDENSE_MODEL", "sonnet"),
+        "claude_chunk_chars": int(env("BRAIN_CLAUDE_CHUNK_CHARS", "60000")),
+        "call_usd": float(env("BRAIN_CONDENSE_CALL_MAX_USD", "0.5")),
+        "cap": float(env("BRAIN_COST_CAP_USD", "10")),
+        "min_usd": float(env("BRAIN_CONDENSE_MIN_USD", "1")),
+        "run_usd": float(env("BRAIN_CONDENSE_RUN_USD", "2")),
     }
+
+
+def claude_label(cfg):
+    return "claude:" + cfg["claude_model"]
+
+
+def claude_ok(brain, cfg):
+    """Claude may write notes now: not local mode, and the month keeps at least min_usd."""
+    if cfg["mode"] == "local":
+        return False
+    return cfg["cap"] - bd.month_usd(brain) >= cfg["min_usd"] - 1e-9
+
+
+def backend(brain, cfg, run_spent=0.0):
+    """claude, local, or wait (claude mode out of money, or this run's Claude ceiling reached)."""
+    if claude_ok(brain, cfg):
+        return "claude" if run_spent < cfg["run_usd"] - 1e-9 else "wait"
+    return "local" if cfg["mode"] in ("auto", "local") else "wait"
 
 
 # --- chunking ---------------------------------------------------------------------------------------
@@ -85,14 +124,13 @@ def split_header(text):
     return text[:i], text[i + 2:]
 
 
-def chunks(text, chunk_tokens):
-    """Pieces of at most chunk_tokens (estimated), split at paragraph boundaries where possible;
-    each piece carries the header so its dates and project stay known."""
-    limit = int(chunk_tokens * CHARS_PER_TOKEN)
+def chunks(text, limit):
+    """Pieces of at most limit characters, split at paragraph boundaries where possible; each piece
+    carries the header so its dates and project stay known."""
     head, body = split_header(text)
-    room = max(1000, limit - len(head) - 100)
-    if len(body) <= room:
+    if len(text) <= limit:
         return [text]
+    room = max(1000, limit - len(head) - 100)
     parts, cur = [], ""
     for para in body.split("\n\n"):
         while len(para) > room:  # one huge paragraph: hard split
@@ -134,6 +172,47 @@ def ollama(url, model, user, num_ctx, system=SYSTEM, timeout=900):
     with urllib.request.urlopen(req, timeout=timeout) as r:
         d = json.load(r)
     return (d.get("message") or {}).get("content") or "", d
+
+
+class ClaudeError(Exception):
+    def __init__(self, why, cost):
+        super().__init__(why)
+        self.why, self.cost = why, cost
+
+
+def claude(user, cfg, system=SYSTEM, timeout=900):
+    """One headless Claude call: the transcript on stdin, the same system prompt as the local model,
+    one turn, no tools, no settings files, hooks or MCP servers, no session saved, no API key (the
+    swarm's login), from a fresh empty temp dir that is removed after. Returns (text, cost); raises
+    ClaudeError(why, cost) on a failed or unreadable result (an unreadable one counts call_usd)."""
+    d = tempfile.mkdtemp(prefix="brain-condense-")
+    env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+    try:
+        r = subprocess.run(
+            ["claude", "-p", "--no-session-persistence", "--output-format", "json",
+             "--model", cfg["claude_model"], "--max-turns", "1", "--tools", "", "--restricted",
+             "--setting-sources", "", "--strict-mcp-config", "--max-budget-usd", "%.2f" % cfg["call_usd"],
+             "--system-prompt", system],
+            input=user, capture_output=True, text=True, cwd=d, env=env, timeout=timeout)
+        out, rc = r.stdout, r.returncode
+    except subprocess.TimeoutExpired:
+        raise ClaudeError("timeout", cfg["call_usd"])
+    except OSError:
+        raise ClaudeError("no-claude", 0.0)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    try:
+        res = json.loads(out)
+        if isinstance(res, list):  # a stream of events: the result is the last one
+            res = [e for e in res if isinstance(e, dict) and e.get("type") == "result"][-1]
+        cost = res.get("total_cost_usd")
+    except (ValueError, IndexError, AttributeError):
+        raise ClaudeError("unparsed", cfg["call_usd"])
+    cost = cfg["call_usd"] if cost is None else float(cost)
+    text = res.get("result")
+    if rc != 0 or res.get("is_error") or res.get("subtype") != "success" or not isinstance(text, str):
+        raise ClaudeError("%s-exit%d" % (res.get("subtype") or "error", rc), cost)
+    return text, cost
 
 
 # --- parsing and merging ------------------------------------------------------------------------
@@ -179,7 +258,8 @@ def render(meta, secs):
     lines = ["# Note: %s" % meta["source"], "- source: %s" % meta["source"], "- date: %s" % (meta.get("date") or "unknown")]
     if meta.get("where"):
         lines.append("- where: %s" % meta["where"])
-    lines.append("- condensed by: %s, %d chunk(s)" % (meta["model"], meta["chunks"]))
+    lines.append("- condensed-by: %s" % meta["model"])
+    lines.append("- chunks: %d" % meta["chunks"])
     for s in SECTIONS:
         lines += ["", "## " + s]
         # The masker is the last word on the model's lines: a note never carries what a digest's
@@ -188,22 +268,39 @@ def render(meta, secs):
     return "\n".join(lines) + "\n"
 
 
-def condense_text(text, cfg, source="(stdin)", date="", where=""):
-    """Returns (note markdown, info dict: seconds, chunks, format_ok, truncated)."""
+def condense_text(text, cfg, source="(stdin)", date="", where="", writer="local", spend=None):
+    """Returns (note markdown, info dict: seconds, chunks, format_ok, truncated, cost). With writer
+    claude, spend(usd) is called after every call (failed ones too) before anything else happens."""
     t0 = time.time()
-    pieces = chunks(text, cfg["chunk_tokens"])
+    if writer == "claude":
+        pieces = chunks(text, cfg["claude_chunk_chars"])
+    else:
+        pieces = chunks(text, int(cfg["chunk_tokens"] * CHARS_PER_TOKEN))
     num_ctx = cfg["chunk_tokens"] + 1024 + OUT_TOKENS
-    parsed, fmt, trunc = [], True, False
+    parsed, fmt, trunc, cost = [], True, False, 0.0
     for p in pieces:
-        raw, d = ollama(cfg["url"], cfg["model"], wrap(p), num_ctx)
+        if writer == "claude":
+            try:
+                raw, c = claude(wrap(p), cfg)
+            except ClaudeError as e:
+                if spend:
+                    spend(e.cost)
+                raise
+            cost += c
+            if spend:
+                spend(c)
+        else:
+            raw, d = ollama(cfg["url"], cfg["model"], wrap(p), num_ctx)
+            if (d.get("prompt_eval_count") or 0) >= num_ctx:
+                trunc = True
         secs, ok = parse(raw)
         fmt = fmt and ok
-        if (d.get("prompt_eval_count") or 0) >= num_ctx:
-            trunc = True
         parsed.append(secs)
     secs = merge(parsed)
-    note = render({"source": source, "date": date, "where": where, "model": cfg["model"], "chunks": len(pieces)}, secs)
-    return note, {"seconds": round(time.time() - t0, 1), "chunks": len(pieces), "format_ok": fmt, "truncated": trunc}
+    label = claude_label(cfg) if writer == "claude" else cfg["model"]
+    note = render({"source": source, "date": date, "where": where, "model": label, "chunks": len(pieces)}, secs)
+    return note, {"seconds": round(time.time() - t0, 1), "chunks": len(pieces), "format_ok": fmt,
+                  "truncated": trunc, "cost": round(cost, 6)}
 
 
 # --- the brain ------------------------------------------------------------------------------------
@@ -231,50 +328,80 @@ def state_path(brain):
     return os.path.join(brain, "raw", ".state", "condensed.json")
 
 
-def current(rec, v, model):
-    return bool(rec) and rec.get("sha") == v.get("sha") and rec.get("model") == model
+def current(rec, v, cfg, claude_now):
+    """A note is current when its digest is unchanged and it was written by Claude, or, while Claude
+    is not usable, by the configured local model."""
+    if not rec or rec.get("sha") != v.get("sha"):
+        return False
+    m = rec.get("model") or ""
+    if m.startswith("claude:"):
+        return True
+    return not claude_now and m == cfg["model"]
 
 
 def cmd_condense(brain):
     cfg = settings()
     st = bd.load(state_path(brain), {})
     t0 = time.time()
-    done = fails = waiting = 0
+    done = {"claude": 0, "local": 0}
+    fails = {"claude": 0, "local": 0}
+    waiting, run_usd, last_err = 0, [0.0], ""
+
+    def spend(usd):
+        run_usd[0] += usd
+        if usd:
+            bd.add_cost(brain, usd, "condense", 1)
+
     for _, rel, v in bd.pending(brain):
-        if current(st.get(rel), v, cfg["model"]) and os.path.exists(os.path.join(brain, st[rel]["note"])):
+        claude_now = claude_ok(brain, cfg)
+        if current(st.get(rel), v, cfg, claude_now) and os.path.exists(os.path.join(brain, st[rel]["note"])):
             continue
-        if time.time() - t0 > cfg["max_seconds"]:
+        writer = backend(brain, cfg, run_usd[0])
+        if writer == "wait" or time.time() - t0 > cfg["max_seconds"]:
             waiting += 1
             continue
         try:
             text = open(os.path.join(brain, rel), encoding="utf-8").read()
-            note, info = condense_text(text, cfg, rel, (v.get("first") or "")[:10], where_of(rel))
+            note, info = condense_text(text, cfg, rel, (v.get("first") or "")[:10], where_of(rel), writer, spend)
+        except ClaudeError as e:
+            fails["claude"] += 1
+            last_err = e.why
+            if done["claude"] == 0 and fails["claude"] >= 2:  # Claude is not working: stop, do not spend on
+                print("condense: claude failed (%s)" % e.why)
+                sys.exit(4)
+            continue
         except (OSError, urllib.error.URLError, ValueError, TimeoutError) as e:
-            fails += 1
-            if done == 0 and fails >= 2:  # the model is not there: stop rather than time out on each
+            fails["local"] += 1
+            if done["local"] == 0 and fails["local"] >= 2:  # the model is not there: stop rather than time out on each
                 print("condense: model unreachable (%s)" % type(e).__name__)
                 sys.exit(3)
             continue
         nrel = note_rel(rel)
         bd.write_digest(brain, nrel, note)
-        st[rel] = {"sha": v.get("sha"), "model": cfg["model"], "note": nrel, "chars": len(note),
-                   "seconds": info["seconds"], "chunks": info["chunks"], "format_ok": info["format_ok"],
-                   "truncated": info["truncated"]}
+        st[rel] = {"sha": v.get("sha"), "model": claude_label(cfg) if writer == "claude" else cfg["model"],
+                   "note": nrel, "chars": len(note), "seconds": info["seconds"], "chunks": info["chunks"],
+                   "format_ok": info["format_ok"], "truncated": info["truncated"], "cost": info["cost"]}
         bd.save(state_path(brain), st)
-        done += 1
+        done[writer] += 1
     secs = round(time.time() - t0)
-    print("condensed=%d failed=%d waiting=%d seconds=%d model=%s" % (done, fails, waiting, secs, cfg["model"]))
-    if fails and not done:
+    print("condensed=%d claude=%d local=%d failed=%d waiting=%d seconds=%d cost=%.4f mode=%s" % (
+        done["claude"] + done["local"], done["claude"], done["local"], fails["claude"] + fails["local"],
+        waiting, secs, run_usd[0], cfg["mode"]))
+    if fails["claude"] and not (done["claude"] + done["local"]):
+        print("condense: claude failed (%s)" % last_err)
+        sys.exit(4)
+    if fails["local"] and not (done["claude"] + done["local"]):
         sys.exit(3)
 
 
 def cmd_queue(brain, budget):
-    model = settings()["model"]
+    cfg = settings()
+    claude_now = claude_ok(brain, cfg)
     st = bd.load(state_path(brain), {})
     total = 0
     for _, rel, v in bd.pending(brain):
         rec = st.get(rel)
-        if not current(rec, v, model) or not os.path.exists(os.path.join(brain, rec["note"])):
+        if not current(rec, v, cfg, claude_now) or not os.path.exists(os.path.join(brain, rec["note"])):
             continue
         c = rec.get("chars", 0)
         if total and total + c > budget:
@@ -296,6 +423,8 @@ def main(argv):
         note, info = condense_text(text, settings(), argv[2])
         sys.stdout.write(note)
         sys.stderr.write(json.dumps(info) + "\n")
+    elif op == "backend":
+        print(backend(os.path.abspath(argv[2]), settings()))
     elif op == "condense":
         cmd_condense(os.path.abspath(argv[2]))
     elif op == "queue":

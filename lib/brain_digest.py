@@ -4,6 +4,7 @@
   brain_digest.py digest BRAIN            raw chats -> raw/digests/ (masked, capped); prints counts
   brain_digest.py queue  BRAIN CHARS      digests not yet ingested, oldest first, within CHARS; one path per line
   brain_digest.py mark   BRAIN < paths    record those digests as ingested (their current content hash)
+  brain_digest.py skip   BRAIN WHY < paths  the same, recorded as skipped for WHY (raw/.state/skipped.json)
   brain_digest.py pending BRAIN           count and characters of digests not yet ingested
   brain_digest.py cost   BRAIN add USD KIND N   append one run's spend to this month (state/costs.json, tracked)
   brain_digest.py cost   BRAIN month      this month's spend in USD
@@ -495,17 +496,25 @@ def cmd_pending(brain):
     print("%d %d" % (len(rows), sum(v.get("chars", 0) for _, _, v in rows)))
 
 
-def cmd_mark(brain):
+def cmd_mark(brain, why=None):
+    """Record the digests on stdin as ingested. With WHY, as skipped instead: they leave the queue
+    the same way, and raw/.state/skipped.json keeps the reason (a later digest change re-queues them)."""
     sd = os.path.join(brain, "raw", ".state")
     index = load(os.path.join(sd, "digests.json"), {})
     ing = load(os.path.join(sd, "ingested.json"), {})
+    skipped = load(os.path.join(sd, "skipped.json"), {})
     n = 0
     for line in sys.stdin:
         rel = line.strip()
         if rel in index:
             ing[rel] = index[rel]["sha"]
+            if why:
+                skipped[rel] = {"sha": index[rel]["sha"], "why": why,
+                                "at": datetime.datetime.now().isoformat(timespec="seconds")}
             n += 1
     save(os.path.join(sd, "ingested.json"), ing)
+    if why:
+        save(os.path.join(sd, "skipped.json"), skipped)
     print(n)
 
 
@@ -517,23 +526,36 @@ def cost_path(brain):
     return os.path.join(brain, "state", "costs.json")
 
 
-def cmd_cost(brain, args):
-    # Tracked in the brain (state/costs.json) and committed by the job, so the month's spend moves
-    # with the brain to whichever machine is primary; a first run starts from the old local record.
+def _costs(brain):
     p = cost_path(brain)
     costs = load(p, None)
-    if costs is None:
+    if costs is None:  # a first run starts from the old local record
         costs = load(os.path.join(brain, "raw", ".state", "costs.json"), {})
-    costs.setdefault(month(), {"usd": 0.0, "runs": [], "alerted": False})
-    m = costs[month()]
     m = costs.setdefault(month(), {"usd": 0.0, "runs": [], "alerted": False})
+    return p, costs, m
+
+
+def month_usd(brain):
+    """This month's spend so far (ingest, condense and lint together)."""
+    return float(_costs(brain)[2]["usd"])
+
+
+def add_cost(brain, usd, kind="ingest", items=0):
+    """Append one Claude call's or run's spend to this month (state/costs.json, tracked)."""
+    p, costs, m = _costs(brain)
+    m["usd"] = round(m["usd"] + float(usd), 6)
+    m["runs"].append({"at": datetime.datetime.now().isoformat(timespec="seconds"), "usd": float(usd),
+                      "kind": kind, "items": int(items)})
+    save_tracked(p, costs)
+
+
+def cmd_cost(brain, args):
+    # Tracked in the brain (state/costs.json) and committed by the job, so the month's spend moves
+    # with the brain to whichever machine is primary.
+    p, costs, m = _costs(brain)
     op = args[0] if args else "month"
     if op == "add":
-        usd = float(args[1])
-        m["usd"] = round(m["usd"] + usd, 6)
-        m["runs"].append({"at": datetime.datetime.now().isoformat(timespec="seconds"), "usd": usd,
-                          "kind": args[2] if len(args) > 2 else "ingest", "items": int(args[3]) if len(args) > 3 else 0})
-        save_tracked(p, costs)
+        add_cost(brain, args[1], args[2] if len(args) > 2 else "ingest", args[3] if len(args) > 3 else 0)
     elif op == "month":
         print("%.2f" % m["usd"])
     elif op == "alerted":
@@ -569,6 +591,8 @@ def main(argv):
         cmd_pending(brain)
     elif op == "mark":
         cmd_mark(brain)
+    elif op == "skip":
+        cmd_mark(brain, argv[3] if len(argv) > 3 else "skipped")
     elif op == "cost":
         cmd_cost(brain, argv[3:])
     else:

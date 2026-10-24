@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # brain_digest.py, brain_condense.py, brain_merge.py and brain-ingest.sh against a throwaway brain
 # with a bare origin. Ollama is a stub HTTP server on localhost that records each request and answers
-# with a fixed note; claude is a stub that records its argv, prompt, cwd and environment and writes
-# into its cwd. No network beyond localhost, no real model, no real claude. Secrets are synthetic.
+# with a fixed note; claude is a stub that records its argv, prompt, cwd and environment and, for a
+# stage B merge, writes into its cwd; for a stage A condense call (--max-turns 1, no --allowedTools)
+# it answers with a fixed note and a cost (CONDENSE_MODE, CONDENSE_COST). No network beyond localhost, no real model, no real claude. Secrets are synthetic.
 set -u
 SRC="$(cd "$(dirname "$0")/../.." && pwd)"; TMP="$(mktemp -d)"
 OPID=""; trap '[ -z "$OPID" ] || kill "$OPID" 2>/dev/null; rm -rf "$TMP"' EXIT
@@ -16,6 +17,21 @@ grep -q "^export PATH=\"$TMP/bin:" "$TMP/scripts/common.sh" || { echo "FAIL coul
 # --- the claude stub ----------------------------------------------------------------------------------
 cat > "$TMP/bin/claude" <<'SH'
 #!/bin/bash
+case " $* " in *" --allowedTools "*) ;; *)
+  # stage A: one condense call. Its own record files, so stage B's checks see only the merge.
+  : > "$CLOG.c"; for a in "$@"; do printf '%s\n' "$a" >> "$CLOG.c"; done
+  head -c 12 > "$CLOG.c.stdin"; cat > /dev/null
+  echo call >> "$CLOG.ccalls"
+  pwd -P > "$CLOG.c.cwd"; ls -A > "$CLOG.c.ls"
+  echo "key=${ANTHROPIC_API_KEY:-unset}" > "$CLOG.c.env"
+  note='## Summary\nFixture session condensed by the stub.\n## People\n- Pat: fixture person\n## Projects\n- project-alpha: a change\n## Decisions\n- none\n## Facts\n- 2026-10-01: secret was sk-ant-api03-EEEEEEEEEEEEEEEEEEEEEEEEEE\n## Open items\n- none'
+  case "${CONDENSE_MODE:-ok}" in
+    ok) printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":%s,"result":"%s"}\n' "${CONDENSE_COST:-0.01}" "$note" ;;
+    fail) echo '{"type":"result","subtype":"error_during_execution","is_error":true,"total_cost_usd":0.02}'; exit 1 ;;
+    unparsed) echo 'not json' ;;
+  esac
+  exit 0 ;;
+esac
 : > "$CLOG"; for a in "$@"; do printf '%s\n' "$a" >> "$CLOG"; done
 cat > "$CLOG.prompt"
 echo call >> "$CLOG.calls"
@@ -53,7 +69,8 @@ chmod +x "$TMP/bin/"*
 export CLOG="$TMP/clog"
 export ANTHROPIC_API_KEY="sk-ant-fake-parent-key-not-real"   # must never reach claude
 unset OPENAI_API_KEY BRAIN_INGEST_CHARS BRAIN_COST_CAP_USD BRAIN_RUN_MAX_USD BRAIN_MONTH BRAIN_EXCLUDE \
-  BRAIN_LOCAL_URL BRAIN_LOCAL_MODEL BRAIN_LOCAL_CHUNK_TOKENS BRAIN_LOCAL_MAX_SECONDS
+  BRAIN_LOCAL_URL BRAIN_LOCAL_MODEL BRAIN_LOCAL_CHUNK_TOKENS BRAIN_LOCAL_MAX_SECONDS BRAIN_CONDENSE \
+  BRAIN_CONDENSE_MODEL BRAIN_CONDENSE_MIN_USD BRAIN_CONDENSE_RUN_USD BRAIN_CLAUDE_CHUNK_CHARS BRAIN_CONDENSE_CALL_MAX_USD
 
 # --- the Ollama stub ----------------------------------------------------------------------------------
 OLOG="$TMP/ollama.log"; : > "$OLOG"; echo ok > "$TMP/ollama.mode"
@@ -232,18 +249,19 @@ eq "chunking: each request within the chunk (plus header and instructions)" 0 "$
 eq "chunking: num_ctx covers chunk, prompt and output" 6560 "$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())["num_ctx"])' "$OLOG")"
 eq "chunking: merged notes keep each line once" 1 "$(grep -c '^- Pat: fixture person$' "$TMP/n2.md")"
 eq "chunking: the summary stays at most 5 lines" 1 "$(sed -n '/^## Summary/,/^## People/p' "$TMP/n2.md" | grep -c '^- ' | awk '{print ($1 <= 5)}')"
-eq "chunking: the note says how many chunks" 1 "$(grep -c 'chunk(s)$' "$TMP/n2.md")"
+eq "chunking: the note says how many chunks" 1 "$(grep -c '^- chunks: [0-9]*$' "$TMP/n2.md")"
+eq "condense: a local note says which model wrote it" 1 "$(grep -c '^- condensed-by: qwen2.5:14b-instruct$' "$TMP/n2.md")"
 echo chatty > "$TMP/ollama.mode"
 eq "format: text outside the sections is a format failure" false "$(python3 "$CON" one "$S1" 2>&1 >/dev/null | python3 -c 'import json,sys; print(str(json.load(sys.stdin)["format_ok"]).lower())')"
 echo ok > "$TMP/ollama.mode"
 eq "note path: claude-code drops the source kind" "raw/notes-condensed/h1/-proj-a/s1.md" "$(python3 "$CON" note raw/digests/claude-code/h1/-proj-a/s1.md)"
-eq "condense unreachable: exit 3, nothing written" 3 "$(BRAIN_LOCAL_URL="$DEAD" python3 "$CON" condense "$BR" >/dev/null; echo $?)"
+eq "condense unreachable: exit 3, nothing written" 3 "$(BRAIN_CONDENSE=local BRAIN_LOCAL_URL="$DEAD" python3 "$CON" condense "$BR" >/dev/null; echo $?)"
 eq "condense unreachable: no notes" no "$([ -d "$BR/raw/notes-condensed" ] && echo yes || echo no)"
 
 # --- the job --------------------------------------------------------------------------------------------
 unset BRAIN_LOCAL_URL
 SW="$HOME/.local/state/swarm/t"; mkdir -p "$SW"
-printf 'SWARM_PROFILE=light\nSWARM_MACHINE=m1\nSWARM_BRAIN_DIR=%s\nBRAIN_LOCAL_URL=%s\nBRAIN_INGEST_CHARS=70000\n' "$BR" "$OURL" > "$SW/.env"
+printf 'SWARM_PROFILE=light\nSWARM_MACHINE=m1\nSWARM_BRAIN_DIR=%s\nBRAIN_LOCAL_URL=%s\nBRAIN_INGEST_CHARS=70000\nBRAIN_CONDENSE=local\n' "$BR" "$OURL" > "$SW/.env"
 printf 'role=primary\nepoch=1\n' > "$SW/.role"
 HELD="$SW/backups/alerts-held.log"
 job() { : > "$CLOG.calls"; bash "$TMP/scripts/brain-ingest.sh" --swarm t "$@" > "$TMP/out" 2>&1; echo $?; }
@@ -256,7 +274,7 @@ p = os.path.join(sys.argv[1], "state/costs.json"); d = json.load(open(p))
 for m in d.values(): m["usd"] = 0.0; m["runs"] = []; m["alerted"] = False
 json.dump(d, open(p, "w"))
 PY
-g commit -qm "ingest: cost reset (test)" -- state/costs.json; g push -q; }
+g commit -qm "ingest: cost reset (test)" -- state/costs.json >/dev/null || true; g push -q; }
 clean() { eq "$1: tree clean, nothing staged" "" "$(g -c core.quotePath=false status --porcelain | grep -v ' raw/' || true)"; }
 head0="$(g rev-parse HEAD)"
 
@@ -365,13 +383,26 @@ echo note > "$BR/raw/notes/n1.md"
 # I5: pages last committed by hand are append-only and must be named in the log entry
 printf '# Hand\nowner line\n' > "$BR/wiki/topics/hand.md"; g add wiki/topics/hand.md; g commit -qm "owner: hand page"; g push -q
 eq "I5: hand pages listed" "wiki/topics/hand.md" "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import brain_merge as m; print(" ".join(m.hand_pages(sys.argv[2])))' "$TMP/scripts" "$BR")"
-rc="$(CLAUDE_MODE=hand job run)"; eq "I5: changing a hand line: refused" 1 "$(tail -1 "$HELD" | grep -c '(hand-edit)')"
-rc="$(CLAUDE_MODE=handquiet job run)"; eq "I5: adding without naming it: refused" 1 "$(tail -1 "$HELD" | grep -c '(hand-edit)')"
+eq "baseline: a page last committed by the bootstrap (brain:) is the job's" "wiki/topics/hand.md" "$(printf '# Seed\n' > "$BR/wiki/topics/seed.md"; g add wiki/topics/seed.md; g commit -qm "brain: seed page"; g push -q; python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import brain_merge as m; print(" ".join(m.hand_pages(sys.argv[2])))' "$TMP/scripts" "$BR")"
+nskip() { python3 -c 'import json,sys; print(sum(1 for v in json.load(open(sys.argv[1])).values() if v["why"] == "hand-edit"))' "$BR/raw/.state/skipped.json" 2>/dev/null || echo 0; }
+nalert() { grep -c 'skipped a note that would change a hand-edited page (hand-edit' "$HELD" || true; }
+# several notes: refused, no alert, the next run takes one note
+echo 999999 > "$BR/raw/.state/queue-chars"
+rc="$(CLAUDE_MODE=hand job run)"
+eq "I5: changing a hand line (several notes): refused" 1 "$rc"
+eq "I5: ... the queue shrinks to one note" 1 "$(cat "$BR/raw/.state/queue-chars")"
+eq "I5: ... nothing skipped, no alert" "0 0" "$(nskip) $(nalert)"
+eq "I5: ... nothing marked" 0 "$(ingested)"
+# one note: skipped (it leaves the queue), one alert
+rc="$(CLAUDE_MODE=hand job run)"
+eq "I5: changing a hand line (one note): skipped" "1 1 1" "$(nskip) $(nalert) $(ingested)"
+eq "I5: ... recorded" 1 "$(grep -c 'skipped 1 note (hand-edit)' "$BR/raw/.state/last-run")"
+rc="$(CLAUDE_MODE=handquiet job run)"; eq "I5: adding without naming it: that note skipped too" "2 2" "$(nskip) $(nalert)"
 eq "I5: the prompt lists the hand page" 1 "$(grep -c '^- wiki/topics/hand.md$' "$CLOG.prompt")"
 clean "I5"
 eq "I5: adding and naming it: accepted" 0 "$(CLAUDE_MODE=handok job run)"
 eq "I5: the owner's line kept, the addition in" "owner line|added line" "$(sed -n '2,3p' "$BR/wiki/topics/hand.md" | paste -sd'|' -)"
-rm -f "$BR/raw/.state/ingested.json" "$BR/raw/.state/queue-chars"
+rm -f "$BR/raw/.state/ingested.json" "$BR/raw/.state/queue-chars" "$BR/raw/.state/skipped.json"
 head1="$(g rev-parse HEAD)"
 
 # I1/minor: a failed commit leaves nothing staged and removes the pages it created
@@ -428,8 +459,93 @@ eq "argv: restricted, no MCP servers" 2 "$(grep -cx -- '--restricted\|--strict-m
 job run >/dev/null
 eq "next run: more marked" 1 "$(ingested | awk '{print ($1 > 1)}')"
 eq "status: exit 0" 0 "$(job status)"
-eq "status: spend against the cap" 1 "$(grep -c 'this month: \$0.84 of \$10' "$TMP/out")"
-eq "status: last run and queues" 2 "$(grep -cE '^(last run: .* ok |queue: [0-9]+ digests .* condensed by)' "$TMP/out")"
+eq "status: spend against the cap" 1 "$(grep -c 'this month ([0-9-]*): \$0.84 of \$10' "$TMP/out")"
+eq "status: last run and queues" 2 "$(grep -cE '^(last run: .* ok |queue: [0-9]+ digests .* next note by local)' "$TMP/out")"
+
+# --- stage A through Claude ------------------------------------------------------------------------------
+# Direct calls of the condenser: the stub claude first on PATH, the real one never reachable.
+CPATH="$TMP/bin:/usr/bin:/bin"; CST="$BR/raw/.state/condensed.json"
+reset_notes() { rm -rf "$BR/raw/notes-condensed" "$CST"; : > "$CLOG.ccalls"; }
+ccalls() { cat "$CLOG.ccalls" 2>/dev/null | grep -c . || true; }
+npend() { python3 "$DIG" pending "$BR" | cut -d' ' -f1; }
+models() { python3 -c 'import json,sys; print(" ".join(sorted(set(v["model"] for v in json.load(open(sys.argv[1])).values()))))' "$CST"; }
+zero_costs; reset_notes
+NP="$(npend)"
+out="$(PATH="$CPATH" BRAIN_CONDENSE=claude BRAIN_LOCAL_URL="$DEAD" python3 "$CON" condense "$BR")"; rc=$?
+eq "claude condense: works with the local model down" 0 "$rc"
+eq "claude condense: one call per pending digest" "$NP" "$(ccalls)"
+eq "claude condense: the counts line" 1 "$(printf '%s\n' "$out" | grep -c "^condensed=$NP claude=$NP local=0 ")"
+eq "claude condense argv: the owner's flags" "-p|--no-session-persistence|--output-format|json|--model|sonnet|--max-turns|1|--tools||--restricted|--setting-sources||--strict-mcp-config" "$(head -14 "$CLOG.c" | paste -sd'|' -)"
+eq "claude condense argv: the same system prompt as the local model" 1 "$(grep -cx -- '--system-prompt' "$CLOG.c")"
+eq "claude condense argv: a per-call ceiling" "0.50" "$(grep -A1 -x -- '--max-budget-usd' "$CLOG.c" | tail -1)"
+eq "claude condense: the transcript is fenced, on stdin" "<transcript>" "$(cat "$CLOG.c.stdin")"
+eq "claude condense: an empty cwd" "" "$(cat "$CLOG.c.ls")"
+eq "claude condense: cwd outside the brain, removed after" "1 no" "$(case "$(cat "$CLOG.c.cwd")" in "$(cd "$BR" && pwd -P)"*) printf 0 ;; *) printf 1 ;; esac) $([ -e "$(cat "$CLOG.c.cwd")" ] && echo yes || echo no)"
+eq "claude condense: no ANTHROPIC_API_KEY" "key=unset" "$(cat "$CLOG.c.env")"
+eq "claude condense: notes say claude:sonnet" "claude:sonnet" "$(models)"
+eq "claude condense: header line" 1 "$(grep -c '^- condensed-by: claude:sonnet$' "$NOTE1")"
+eq "claude condense: the note is masked" 0 "$(grep -rc 'sk-ant' "$BR/raw/notes-condensed" | awk -F: '{s+=$2} END {print s+0}')"
+eq "claude condense: every call's cost in the month, kind condense" "$NP $(python3 -c "print('%.2f' % ($NP * 0.01))")" "$(python3 -c 'import json,sys,os; d=json.load(open(os.path.join(sys.argv[1],"state/costs.json"))); r=[x for m in d.values() for x in m["runs"] if x["kind"]=="condense"]; print(len(r))' "$BR") $(spent)"
+out="$(PATH="$CPATH" BRAIN_CONDENSE=claude python3 "$CON" condense "$BR")"
+eq "claude condense: a second pass calls nothing" 0 "$(ccalls | awk -v n="$NP" '{print $1 - n}')"
+eq "claude condense: the queue takes Claude notes" "$NP" "$(BRAIN_CONDENSE=claude python3 "$CON" queue "$BR" 99999999 | grep -c .)"
+eq "claude condense: local mode accepts them too" "$NP" "$(BRAIN_CONDENSE=local python3 "$CON" queue "$BR" 99999999 | grep -c .)"
+# a failing claude: stop after two failures, exit 4, the spend still counts
+zero_costs; reset_notes
+eq "claude condense failing: exit 4" 4 "$(PATH="$CPATH" CONDENSE_MODE=fail BRAIN_CONDENSE=claude python3 "$CON" condense "$BR" >/dev/null; echo $?)"
+eq "claude condense failing: two calls, both paid" "2 0.04" "$(ccalls) $(spent)"
+zero_costs; reset_notes
+PATH="$CPATH" CONDENSE_MODE=unparsed BRAIN_CONDENSE=claude python3 "$CON" condense "$BR" >/dev/null
+eq "claude condense unparsed: counts the call ceiling" "1.00" "$(spent)"
+# the per-run ceiling: no new Claude note after BRAIN_CONDENSE_RUN_USD; the rest wait
+zero_costs; reset_notes
+out="$(PATH="$CPATH" CONDENSE_COST=0.3 BRAIN_CONDENSE_RUN_USD=0.5 BRAIN_CONDENSE=auto python3 "$CON" condense "$BR")"
+eq "run ceiling: two notes, the rest wait" "2 $((NP - 2))" "$(ccalls) $(printf '%s\n' "$out" | sed -n 's/.* waiting=\([0-9]*\).*/\1/p')"
+
+# auto: under BRAIN_CONDENSE_MIN_USD left in the month, the local model, marked; later redone by Claude
+zero_costs; reset_notes; python3 "$DIG" cost "$BR" add 9.5 ingest 0
+eq "auto, \$0.50 left of \$10: next note by local" local "$(BRAIN_CONDENSE=auto python3 "$CON" backend "$BR")"
+out="$(PATH="$CPATH" BRAIN_CONDENSE=auto BRAIN_LOCAL_URL="$OURL" python3 "$CON" condense "$BR")"
+eq "auto, low budget: no claude, all local" "0 qwen2.5:14b-instruct" "$(ccalls) $(models)"
+eq "auto, low budget: the note says condensed-by the local model" 1 "$(grep -c '^- condensed-by: qwen2.5:14b-instruct$' "$NOTE1")"
+eq "auto, low budget: local notes are queued" "$NP" "$(BRAIN_CONDENSE=auto python3 "$CON" queue "$BR" 99999999 | grep -c .)"
+eq "auto, a higher cap for the month: claude again" claude "$(BRAIN_COST_CAP_USD=20 BRAIN_CONDENSE=auto python3 "$CON" backend "$BR")"
+zero_costs
+eq "auto, budget back: local notes are not current" 0 "$(BRAIN_CONDENSE=auto python3 "$CON" queue "$BR" 99999999 | grep -c .)"
+out="$(PATH="$CPATH" BRAIN_CONDENSE=auto BRAIN_LOCAL_URL="$DEAD" python3 "$CON" condense "$BR")"
+eq "auto, budget back: every local note redone by Claude" "$NP claude:sonnet" "$(ccalls) $(models)"
+eq "claude mode, no money: notes wait, nothing local" "wait" "$(python3 "$DIG" cost "$BR" add 9.5 ingest 0; BRAIN_CONDENSE=claude python3 "$CON" backend "$BR")"
+zero_costs
+
+# the cap for one month: BRAIN_COST_CAP_<YYYY>_<MM> in .env beats BRAIN_COST_CAP_USD
+reset_notes
+BRAIN_MONTH=2031-02 python3 "$DIG" cost "$BR" add 9.0 ingest 0
+printf 'BRAIN_COST_CAP_2031_02=20\n' >> "$SW/.env"
+BRAIN_MONTH=2031-02 CLAUDE_MODE=unparsed job run >/dev/null
+eq "month cap: stage B budget from the month's cap (min 2, 20 - 9 - 0.25)" "2.00" "$(grep -A1 -x -- '--max-budget-usd' "$CLOG" | tail -1)"
+BRAIN_MONTH=2031-02 job status >/dev/null
+eq "month cap: status shows it" 1 "$(grep -c 'this month (2031-02): \$11.00 of \$20' "$TMP/out")"
+BRAIN_MONTH=2031-03 job status >/dev/null
+eq "month cap: other months keep BRAIN_COST_CAP_USD" 1 "$(grep -c 'this month (2031-03): \$0.00 of \$10 ' "$TMP/out")"
+sed -i.bak '/^BRAIN_COST_CAP_2031_02=/d' "$SW/.env"
+
+# the job with Claude condensing, end to end: stage A spend committed, then the merge
+sed -i.bak "s|^BRAIN_CONDENSE=.*|BRAIN_CONDENSE=auto|; s|^BRAIN_LOCAL_URL=.*|BRAIN_LOCAL_URL=$DEAD|" "$SW/.env"
+reset_notes; rm -f "$BR/raw/.state/ingested.json" "$BR/raw/.state/queue-chars"; head2="$(g rev-parse HEAD)"; NP="$(npend)"
+eq "job, claude condense: exit 0 with Ollama down" 0 "$(job run)"
+eq "job, claude condense: stage A calls, one merge" "$NP 1" "$(ccalls) $(calls)"
+eq "job, claude condense: stage A spend committed on its own" 1 "$(g log --format=%s "$head2"..HEAD | grep -c '^ingest: cost .* (condense)$')"
+eq "job, claude condense: the month holds both stages" "$(python3 -c "print('%.2f' % ($NP * 0.01 + 0.42))")" "$(spent)"
+eq "job, claude condense: the merged note is Claude's" 1 "$(grep -c '^- condensed-by: claude:sonnet$' "$NOTE1")"
+eq "job, claude condense: no digest or note text in the log" 0 "$(grep -c 'OWNERPHRASE\|sk-ant\|Pat: fixture' "$TMP/out")"
+clean "job, claude condense"
+reset_notes; rm -f "$BR/raw/.state/ingested.json"
+eq "job, claude condense failing: refused" 1 "$(CONDENSE_MODE=fail job run)"
+eq "job, claude condense failing: no merge, alert names the class" "0 1" "$(calls) $(tail -1 "$HELD" | grep -c '(condense-claude)')"
+eq "job, claude condense failing: the spend committed" 1 "$(g log -1 --format=%s | grep -c '^ingest: cost .* (condense)$')"
+clean "job, claude condense failing"
+sed -i.bak "s|^BRAIN_CONDENSE=.*|BRAIN_CONDENSE=local|; s|^BRAIN_LOCAL_URL=.*|BRAIN_LOCAL_URL=$OURL|" "$SW/.env"
+zero_costs
 
 # the merge helpers directly: rollback removes created files and unstages
 W="$TMP/w/brain"; mkdir -p "$W/wiki/topics"; cp "$BR/index.md" "$BR/log.md" "$W/"; cp -R "$BR/wiki/." "$W/wiki/"

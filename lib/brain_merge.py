@@ -17,8 +17,10 @@ these steps build that dir, check what came back, and copy back wiki/, index.md 
   brain_merge.py rollback BRAIN CREATED       tracked wiki/, index.md, log.md back to HEAD; the files
                                               in CREATED removed
 
-A hand-edited page is a wiki page whose last commit subject does not start with "ingest:". Claude
-may only add lines to one, and must name it in the night's log entry. Prints paths and counts only.
+A hand-edited page is a wiki page whose last commit subject does not start with one of the job's
+or the bootstrap's prefixes (JOB_PREFIXES: ingest:, brain:, log:, rules:, design:); every page that
+exists from the bootstrap is therefore the job's. Claude may only add lines to a hand-edited page,
+and must name it in the night's log entry. Prints paths and counts only.
 """
 import filecmp
 import hashlib
@@ -32,6 +34,9 @@ import brain_condense as bc  # noqa: E402
 import brain_digest as bd  # noqa: E402
 
 COPIED = ("CLAUDE.md", "index.md", "log.md")
+# Commit subjects that mark a page as the job's (the nightly ingest, and the bootstrap commits that
+# wrote the first pages). Any other subject is the owner's hand.
+JOB_PREFIXES = ("ingest:", "brain:", "log:", "rules:", "design:")
 BACK = ("index.md", "log.md")
 
 
@@ -87,7 +92,7 @@ def hand_pages(brain):
         if not p or not p.endswith(".md"):
             continue
         subj = git(brain, "log", "-1", "--format=%s", "--", p).decode("utf-8", "replace").strip()
-        if subj and not subj.startswith("ingest:"):
+        if subj and not subj.startswith(JOB_PREFIXES):
             out.append(p)
     return out
 
