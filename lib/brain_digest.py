@@ -364,6 +364,19 @@ def cmd_digest(brain):
     stats = Counter()
     largest = 0
     rx = excluder()
+    # Digests made before an exclusion applied (an older version, or a wider BRAIN_EXCLUDE now) go
+    # too: every indexed digest is checked again on each pass.
+    for rel in sorted(index):
+        p = rel.split("/")
+        extra = p[3:5] if p[:3] == ["raw", "digests", "claude-code"] else p[3:4]
+        try:
+            with open(os.path.join(brain, rel), encoding="utf-8", errors="replace") as f:
+                head = f.read(4000)
+        except OSError:
+            head = ""
+        if excluded(rx, head, *extra):
+            stats["excluded"] += 1
+            drop_digest(brain, index, rel)
     cc = os.path.join(brain, "raw", "chats", "claude-code")
     for root, dirs, files in os.walk(cc):
         dirs.sort()

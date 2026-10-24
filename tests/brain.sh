@@ -161,6 +161,10 @@ PY
 D="$BR/raw/digests"; DIG="$TMP/scripts/brain_digest.py"; CON="$TMP/scripts/brain_condense.py"; MRG="$TMP/scripts/brain_merge.py"
 
 # --- digests ------------------------------------------------------------------------------------------
+# A first pass with nothing excluded (as an older version would have made), then the default: the
+# work digests already in the index must go.
+BRAIN_EXCLUDE='^nomatch$' python3 "$DIG" digest "$BR" >/dev/null
+eq "exclusion off: work digests made" 3 "$(grep -rl 'WORKMARK' "$D" | wc -l | tr -d ' ')"
 out="$(python3 "$DIG" digest "$BR")"
 S1="$D/claude-code/h1/-proj-a/s1.md"
 eq "session digest written" yes "$([ -f "$S1" ] && echo yes || echo no)"
@@ -187,6 +191,7 @@ eq "the summary prints counts only" 0 "$(printf '%s\n' "$out" | grep -c 'OWNERPH
 eq "work excluded: by folder, by cwd, by conversation title" 3 "$(printf '%s\n' "$out" | sed -n 's/.*excluded=\([0-9]*\).*/\1/p')"
 eq "work excluded: no digest anywhere" 0 "$(grep -rl 'WORKMARK' "$D" | wc -l | tr -d ' ')"
 eq "work excluded: not in the index" 0 "$(grep -c 'w1.md\|w2.md\|c-2.md' "$BR/raw/.state/digests.json")"
+eq "work excluded: never queued" 0 "$(python3 "$DIG" queue "$BR" 99999999 | grep -c 'w1.md\|w2.md\|c-2.md')"
 out="$(python3 "$DIG" digest "$BR")"
 eq "second pass: nothing rewritten" 0 "$(printf '%s\n' "$out" | grep -c 'written_')"
 eq "BRAIN_EXCLUDE replaces the default" 1 "$(printf '# S\n- project folder: -x-gitea-y\n\nOwner: hi\n' > "$TMP/x.md"; BRAIN_EXCLUDE='nomatch' python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import brain_digest as b; print(0 if b.excluded(b.excluder(), open(sys.argv[2]).read()) else 1)' "$TMP/scripts" "$TMP/x.md")"
