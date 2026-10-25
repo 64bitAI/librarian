@@ -3,10 +3,17 @@
 
   brain_digest.py digest BRAIN            raw chats -> raw/digests/ (masked, capped); prints counts
   brain_digest.py queue  BRAIN CHARS      digests not yet ingested, oldest first, within CHARS; one path per line
-  brain_digest.py mark   BRAIN < paths    record those digests as ingested (their current content hash)
-  brain_digest.py skip   BRAIN WHY < paths  the same, recorded as skipped for WHY (raw/.state/skipped.json)
+  brain_digest.py mark   BRAIN [SHAS] < paths  record those digests and owner notes as ingested (their
+                                          content hash; an owner note's from SHAS, the JSON prepare
+                                          wrote, when it is there)
+  brain_digest.py skip   BRAIN WHY [SHAS] < paths  the same, recorded as skipped for WHY (raw/.state/skipped.json)
   brain_digest.py pending BRAIN           count and characters of digests not yet ingested
   brain_digest.py fresh  BRAIN            how many raw chats are new or changed since the last digest pass
+  brain_digest.py notes  BRAIN check      owner notes (raw/notes) that fail a check leave the queue as
+                                          skipped (secret, work, too-large); prints counts and the
+                                          skipped paths with their class
+  brain_digest.py notes  BRAIN pending    count and characters of owner notes waiting, and how many
+                                          are not committed yet (they wait for a commit)
   brain_digest.py cost   BRAIN add USD KIND N   append one run's spend to this month (state/costs.json, tracked)
   brain_digest.py cost   BRAIN month      this month's spend in USD
   brain_digest.py cost   BRAIN alerted    exit 0 if this month's cap alert was already sent
@@ -15,7 +22,10 @@
   brain_digest.py scan   < text           exit 1 (printing a count only) if masking would change any line
 
 Digests are derived and gitignored: raw/digests/claude-code/<host>/<project>/<session>.md and
-raw/digests/claude-ai/<account>/<conversation>.md. State lives in raw/.state/ (digested.json,
+raw/digests/claude-ai/<account>/<conversation>.md. Owner notes (raw/notes/**/*.md, written by the
+owner or an agent and committed) are sources in their own right: never digested or condensed, queued
+while committed and unchanged in the work tree, and keyed by content hash in ingested.json like a
+digest, so an edited note comes back and an unchanged one does not. State lives in raw/.state/ (digested.json,
 digests.json, ingested.json); the month's spend in state/costs.json, which the job commits. Nothing here prints digest contents.
 """
 import datetime
@@ -23,6 +33,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 from collections import Counter
 
@@ -519,26 +530,142 @@ def cmd_pending(brain):
     print("%d %d" % (len(rows), sum(v.get("chars", 0) for _, _, v in rows)))
 
 
-def cmd_mark(brain, why=None):
-    """Record the digests on stdin as ingested. With WHY, as skipped instead: they leave the queue
-    the same way, and raw/.state/skipped.json keeps the reason (a later digest change re-queues them)."""
+def cmd_mark(brain, why=None, shas_file=None):
+    """Record the digests and owner notes on stdin as ingested. With WHY, as skipped instead: they
+    leave the queue the same way, and raw/.state/skipped.json keeps the reason (a later change
+    re-queues them). An owner note is recorded at the hash of the copy the merge saw (SHAS, from
+    brain_merge.py prepare), so an edit made during the run comes back the next night."""
     sd = os.path.join(brain, "raw", ".state")
     index = load(os.path.join(sd, "digests.json"), {})
     ing = load(os.path.join(sd, "ingested.json"), {})
     skipped = load(os.path.join(sd, "skipped.json"), {})
+    shas = load(shas_file, {}) if shas_file else {}
     n = 0
     for line in sys.stdin:
         rel = line.strip()
+        h = None
         if rel in index:
-            ing[rel] = index[rel]["sha"]
+            h = index[rel]["sha"]
+        elif rel.startswith(NOTES) and ".." not in rel.split("/"):
+            h = shas.get(rel)
+            if h is None:
+                try:
+                    h = note_text(brain, rel)[1]
+                except OSError:
+                    h = None
+        if h:
+            ing[rel] = h
             if why:
-                skipped[rel] = {"sha": index[rel]["sha"], "why": why,
+                skipped[rel] = {"sha": h, "why": why,
                                 "at": datetime.datetime.now().isoformat(timespec="seconds")}
             n += 1
     save(os.path.join(sd, "ingested.json"), ing)
     if why:
         save(os.path.join(sd, "skipped.json"), skipped)
     print(n)
+
+
+# --- owner notes (raw/notes) -----------------------------------------------------------------------
+NOTES = "raw/notes/"
+
+
+def _git(brain, *args):
+    return subprocess.run(["git", "-C", brain, "-c", "core.quotePath=false"] + list(args),
+                          capture_output=True, check=True).stdout.decode("utf-8", "surrogateescape")
+
+
+def _names(out):
+    return set(p for p in out.split("\0") if p)
+
+
+def note_files(brain):
+    """(ready, waiting): raw/notes/**/*.md committed at HEAD and unchanged in the work tree, and the
+    ones not committed yet (new, or edited since). Only a committed note is queued, so a citation to
+    raw/notes/<file> can be checked from any clone."""
+    try:
+        head = _names(_git(brain, "ls-tree", "-r", "-z", "--name-only", "HEAD", "--", "raw/notes"))
+        changed = _names(_git(brain, "diff", "--name-only", "-z", "HEAD", "--", "raw/notes"))
+        new = _names(_git(brain, "ls-files", "-z", "-o", "--exclude-standard", "--", "raw/notes"))
+    except (OSError, subprocess.CalledProcessError):
+        return [], []
+    md = lambda p: p.endswith(".md") and not os.path.basename(p).startswith(".")
+    ready = sorted(p for p in head - changed if md(p) and os.path.isfile(os.path.join(brain, p)))
+    return ready, sorted(p for p in (changed | new) if md(p))
+
+
+def note_text(brain, rel):
+    """(text, sha of the bytes): the hash the queue, the copy into stage B and the mark all use."""
+    with open(os.path.join(brain, rel), "rb") as f:
+        b = f.read()
+    return b.decode("utf-8", "replace"), hashlib.sha256(b).hexdigest()
+
+
+def note_date(brain, rel):
+    """The date of the note's last commit (YYYY-MM-DD), the date its citations carry."""
+    try:
+        return _git(brain, "log", "-1", "--format=%cs", "--", rel).strip() or "unknown"
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
+def note_problem(rel, text):
+    """Why an owner note may not go to the merge, or None. The same strict masker the merge's
+    secret-in-wiki check uses, line by line; work material by its name or title (BRAIN_EXCLUDE); a
+    note over the digest cap (notes are meant to be short)."""
+    if len(text) > CAP:
+        return "too-large"
+    title = next((l.lstrip("#").strip() for l in text.splitlines() if l.startswith("#")), "")
+    if excluded(excluder(), text, rel[len(NOTES):], title):
+        return "work"
+    if any(strict(l) != l for l in text.splitlines()):
+        return "secret"
+    return None
+
+
+def pending_notes(brain):
+    """Committed owner notes not yet ingested at their current content, oldest commit first:
+    (date, rel, {sha, chars, date, problem})."""
+    ing = load(os.path.join(brain, "raw", ".state", "ingested.json"), {})
+    rows = []
+    for rel in note_files(brain)[0]:
+        try:
+            text, h = note_text(brain, rel)
+        except OSError:
+            continue
+        if ing.get(rel) == h:
+            continue
+        d = note_date(brain, rel)
+        rows.append((d, rel, {"sha": h, "chars": len(text), "date": d, "problem": note_problem(rel, text)}))
+    rows.sort()
+    return rows
+
+
+def cmd_notes(brain, op):
+    rows = pending_notes(brain)
+    if op == "pending":
+        ok = [v for _, _, v in rows if not v["problem"]]
+        print("%d %d %d" % (len(ok), sum(v["chars"] for v in ok), len(note_files(brain)[1])))
+        return
+    sd = os.path.join(brain, "raw", ".state")
+    ing = load(os.path.join(sd, "ingested.json"), {})
+    skipped = load(os.path.join(sd, "skipped.json"), {})
+    stats, out = Counter(), []
+    for _, rel, v in rows:
+        if not v["problem"]:
+            stats["queued"] += 1
+            stats["chars"] += v["chars"]
+            continue
+        # Skipped at this content: it leaves the queue, and an edit (a new hash) brings it back.
+        ing[rel] = v["sha"]
+        skipped[rel] = {"sha": v["sha"], "why": v["problem"],
+                        "at": datetime.datetime.now().isoformat(timespec="seconds")}
+        stats["skipped_" + v["problem"]] += 1
+        out.append("skipped %s: %s" % (v["problem"], rel))
+    if out:
+        save(os.path.join(sd, "ingested.json"), ing)
+        save(os.path.join(sd, "skipped.json"), skipped)
+    stats["uncommitted"] = len(note_files(brain)[1])
+    print(" ".join(["%s=%d" % (k, v) for k, v in sorted(stats.items())] + out))
 
 
 def month():
@@ -615,9 +742,11 @@ def main(argv):
     elif op == "fresh":
         cmd_fresh(brain)
     elif op == "mark":
-        cmd_mark(brain)
+        cmd_mark(brain, None, argv[3] if len(argv) > 3 else None)
     elif op == "skip":
-        cmd_mark(brain, argv[3] if len(argv) > 3 else "skipped")
+        cmd_mark(brain, argv[3] if len(argv) > 3 else "skipped", argv[4] if len(argv) > 4 else None)
+    elif op == "notes":
+        cmd_notes(brain, argv[3] if len(argv) > 3 else "check")
     elif op == "cost":
         cmd_cost(brain, argv[3:])
     else:

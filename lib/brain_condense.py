@@ -5,8 +5,12 @@ HTTP API (no cost). Stdlib only; called by brain-ingest.sh and brain_compare.py.
 
   brain_condense.py condense BRAIN    condense pending digests (oldest first) that have no current
                                       note, until BRAIN_LOCAL_MAX_SECONDS; prints counts
-  brain_condense.py queue BRAIN CHARS pending digests whose note is current, oldest first, until
-                                      CHARS characters of notes (at least one); one digest path per line
+  brain_condense.py queue BRAIN CHARS what stage B merges next, one path per line: first the owner
+                                      notes (raw/notes, committed, not yet ingested, passing their
+                                      checks; oldest commit first, never condensed), then pending
+                                      digests whose note is current, oldest first; until CHARS
+                                      characters in all, and at least one item
+  brain_condense.py chars BRAIN QUEUE the characters a queue file holds (owner notes and condensed notes)
   brain_condense.py backend BRAIN     which writer the next note would get: claude, local or wait
   brain_condense.py note DIGEST       the note path for a digest path (relative to the brain)
   brain_condense.py one FILE          condense one digest file to stdout with the local model
@@ -394,22 +398,46 @@ def cmd_condense(brain):
         sys.exit(3)
 
 
-def cmd_queue(brain, budget):
+def queue_items(brain):
+    """(path, characters) in merge order: owner notes first, so the chat backlog never starves them,
+    then digests with a current condensed note."""
+    for _, rel, v in bd.pending_notes(brain):
+        if not v["problem"]:
+            yield rel, v["chars"]
     cfg = settings()
     claude_now = claude_ok(brain, cfg)
     st = bd.load(state_path(brain), {})
-    total = 0
     for _, rel, v in bd.pending(brain):
         rec = st.get(rel)
         if not current(rec, v, cfg, claude_now) or not os.path.exists(os.path.join(brain, rec["note"])):
             continue
-        c = rec.get("chars", 0)
+        yield rel, rec.get("chars", 0)
+
+
+def cmd_queue(brain, budget):
+    total = 0
+    for rel, c in queue_items(brain):
         if total and total + c > budget:
             break
         total += c
         print(rel)
         if total >= budget:
             break
+
+
+def cmd_chars(brain, queue):
+    st = bd.load(state_path(brain), {})
+    total = 0
+    for rel in open(queue, encoding="utf-8").read().split("\n"):
+        rel = rel.strip()
+        if rel.startswith(bd.NOTES):
+            try:
+                total += len(bd.note_text(brain, rel)[0])
+            except OSError:
+                pass
+        elif rel in st:
+            total += st[rel].get("chars", 0)
+    print(total)
 
 
 def main(argv):
@@ -429,6 +457,8 @@ def main(argv):
         cmd_condense(os.path.abspath(argv[2]))
     elif op == "queue":
         cmd_queue(os.path.abspath(argv[2]), int(argv[3]) if len(argv) > 3 else 120000)
+    elif op == "chars" and len(argv) > 3:
+        cmd_chars(os.path.abspath(argv[2]), argv[3])
     else:
         sys.exit(__doc__)
 

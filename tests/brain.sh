@@ -38,6 +38,7 @@ esac
 cat > "$CLOG.prompt"
 echo call >> "$CLOG.calls"
 pwd -P > "$CLOG.cwd"; ls -A > "$CLOG.ls"
+find notes -type f | LC_ALL=C sort > "$CLOG.notes"; find notes -type f -exec cat {} + > "$CLOG.notetext"
 echo "key=${ANTHROPIC_API_KEY:-unset}" > "$CLOG.env"
 d="$(date +%F)"
 entry() { printf '\n## [%s] ingest | n notes\n%s\n' "$d" "${1:-fixture}" >> log.md; }
@@ -63,6 +64,10 @@ case "${CLAUDE_MODE:-ok}" in
   hand) sed -i.bak 's/^owner line$/changed by claude/' wiki/topics/hand.md; rm -f wiki/topics/hand.md.bak; entry "hand: wiki/topics/hand.md"; ok 0.1 ;;
   handquiet) echo "added line" >> wiki/topics/hand.md; entry; ok 0.1 ;;
   handok) echo "added line" >> wiki/topics/hand.md; entry "added to wiki/topics/hand.md"; ok 0.1 ;;
+  strayown) echo "changed" >> "$(find notes/_raw-notes -type f | head -1)"; entry; ok 0.2 ;;
+  strayownnew) echo x > notes/_raw-notes/extra.md; entry; ok 0.2 ;;
+  noteedit) printf 'edited during the run\n' >> "$BR/raw/notes/sub/later.md"
+    git -C "$BR" -c user.email=t@t -c user.name=t commit -qm "note: edit" -- raw/notes/sub/later.md; entry; ok 0.1 ;;
   term) kill -TERM "$(cat "$BR/raw/.state/ingest.lock/pid")"; entry; ok 0.05 ;;
 esac
 SH
@@ -547,6 +552,70 @@ eq "job, claude condense failing: no merge, alert names the class" "0 1" "$(call
 eq "job, claude condense failing: the spend committed" 1 "$(g log -1 --format=%s | grep -c '^ingest: cost .* (condense)$')"
 clean "job, claude condense failing"
 sed -i.bak "s|^BRAIN_CONDENSE=.*|BRAIN_CONDENSE=local|; s|^BRAIN_LOCAL_URL=.*|BRAIN_LOCAL_URL=$OURL|" "$SW/.env"
+zero_costs
+
+# --- owner notes: raw/notes, committed, never condensed, merged before any chat --------------------------
+rm -f "$BR/raw/.state/ingested.json" "$BR/raw/.state/skipped.json" "$BR/raw/.state/queue-chars"
+GN="raw/notes/2026-10-20 garden é.md"
+mkdir -p "$BR/raw/notes/sub"
+printf '# Garden\n- 2026-10-20: planted garlic OWNNOTEMARK\n' > "$BR/$GN"
+printf '# Later\n- a second note\n' > "$BR/raw/notes/sub/later.md"
+printf '# Keys\n- the key is %s\n' "sk-ant-api03-FFFFFFFFFFFFFFFFFFFFFFFFFFFF" > "$BR/raw/notes/leak.md"
+printf '# employerco pitch\n- WORKMARK four\n' > "$BR/raw/notes/pitch.md"
+g add -- "$GN" raw/notes/sub/later.md raw/notes/leak.md raw/notes/pitch.md; g commit -qm "note: four notes"; g push -q
+printf '# Draft\n' > "$BR/raw/notes/draft.md"   # not committed: it waits (with n1.md from above)
+out="$(python3 "$DIG" notes "$BR" check)"
+eq "notes check: two queued, a secret and a work note skipped, two uncommitted" "queued=2 skipped_secret=1 skipped_work=1 uncommitted=2" "$(printf '%s\n' "$out" | grep -o 'queued=[0-9]*\|skipped_[a-z]*=[0-9]*\|uncommitted=[0-9]*' | paste -sd' ' -)"
+eq "notes check: skips named by path and class" "skipped secret: raw/notes/leak.md|skipped work: raw/notes/pitch.md" "$(printf '%s\n' "$out" | grep -o 'skipped [a-z]*: raw/notes/[a-z]*\.md' | paste -sd'|' -)"
+eq "notes check: prints no note text" 0 "$(printf '%s\n' "$out" | grep -c 'sk-ant\|OWNNOTEMARK\|WORKMARK')"
+eq "notes check: skipped.json keeps why" "secret work" "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["raw/notes/leak.md"]["why"], d["raw/notes/pitch.md"]["why"])' "$BR/raw/.state/skipped.json")"
+eq "notes pending: count and uncommitted" "2 2" "$(python3 "$DIG" notes "$BR" pending | awk '{print $1, $3}')"
+eq "queue: one character still takes one owner note" "$GN" "$(python3 "$CON" queue "$BR" 1)"
+BRAIN_CONDENSE=local BRAIN_LOCAL_URL="$OURL" python3 "$CON" condense "$BR" >/dev/null
+BRAIN_CONDENSE=local python3 "$CON" queue "$BR" 99999999 > "$TMP/q"
+eq "queue: owner notes first, then the (older) chats" "raw/notes|raw/notes|raw/digests" "$(head -3 "$TMP/q" | cut -d/ -f1-2 | paste -sd'|' -)"
+eq "queue: no skipped or uncommitted note" 0 "$(grep -c 'leak\|pitch\|draft\|n1\.md' "$TMP/q")"
+eq "notes are never condensed" 0 "$(find "$BR/raw/notes-condensed" -path '*garden*' -o -path '*later*' 2>/dev/null | wc -l | tr -d ' ')"
+# a run with the queue at one character: the oldest owner note alone
+rc="$(job run)"
+eq "owner note run: exit 0" 0 "$rc"
+eq "owner note run: the note alone in the work dir" "notes/_raw-notes/2026-10-20 garden é.md" "$(cat "$CLOG.notes")"
+eq "owner note run: the prompt cites the raw/notes path and its commit date" 1 "$(grep -cxF -- "- notes/_raw-notes/2026-10-20 garden é.md (owner note: cite $GN, $(g log -1 --format=%cs -- "$GN"))" "$CLOG.prompt")"
+eq "owner note run: the prompt says merge owner notes first" 1 "$(grep -c 'Merge them first' "$CLOG.prompt")"
+eq "owner note run: marked at its content hash" "$(shasum -a 256 "$BR/$GN" | cut -d' ' -f1)" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$BR/raw/.state/ingested.json" "$GN")"
+eq "owner note run: the queue grows by the note's size" "$(( $(python3 -c 'import sys; print(len(open(sys.argv[1], encoding="utf-8").read()))' "$BR/$GN") * 2 ))" "$(cat "$BR/raw/.state/queue-chars")"
+eq "owner note run: the log line" 1 "$(grep -c 'owner notes: .*queued=2 ' "$TMP/out")"
+eq "owner notes: no secret or work text reached the merge or the log" 0 "$(cat "$CLOG.prompt" "$CLOG.notetext" "$TMP/out" | grep -c 'sk-ant\|WORKMARK')"
+eq "owner notes: the note's text never in the job's log" 0 "$(grep -c 'OWNNOTEMARK' "$TMP/out")"
+clean "owner note run"
+# a big queue: the next owner note listed first, condensed notes after it
+echo 99999999 > "$BR/raw/.state/queue-chars"
+rc="$(job run)"
+eq "big run: exit 0" 0 "$rc"
+eq "big run: the owner note leads the list, chats follow" "notes/_raw-notes/sub/later.md|notes/h1" "$(grep '^- notes/' "$CLOG.prompt" | head -2 | sed 's/^- //; s/ (owner note.*//; s|^\(notes/h1\)/.*|\1|' | paste -sd'|' -)"
+eq "unchanged notes are not queued again" "0 2" "$(python3 "$DIG" notes "$BR" pending | awk '{print $1, $3}')"
+# an uncommitted edit waits; a committed edit comes back; a fixed secret note comes back
+printf 'more\n' >> "$BR/raw/notes/sub/later.md"
+eq "an uncommitted edit waits" "0 3" "$(python3 "$DIG" notes "$BR" pending | awk '{print $1, $3}')"
+g commit -qm "note: edit" -- raw/notes/sub/later.md
+printf '# Keys\n- the key lives in the vault\n' > "$BR/raw/notes/leak.md"; g commit -qm "note: fix" -- raw/notes/leak.md; g push -q
+eq "a committed edit and a fixed note are queued again" "2 2" "$(python3 "$DIG" notes "$BR" pending | awk '{print $1, $3}')"
+# an edit committed while the merge runs: the copy the merge saw is what gets marked
+echo 999999 > "$BR/raw/.state/queue-chars"
+rc="$(CLAUDE_MODE=noteedit job run)"
+eq "edit during the run: exit 0" 0 "$rc"
+eq "edit during the run: that note comes back next time" "1 raw/notes/sub/later.md" "$(python3 "$DIG" notes "$BR" pending | awk '{print $1}') $(python3 "$CON" queue "$BR" 1)"
+# stray writes to owner notes in the work dir
+for mode in strayown strayownnew; do
+  rc="$(CLAUDE_MODE=$mode job run)"
+  eq "$mode: refused" 1 "$(tail -1 "$HELD" | grep -c '(stray-writes)')"
+  clean "$mode"
+done
+eq "the owner's notes never changed by a run" "# Garden|- 2026-10-20: planted garlic OWNNOTEMARK" "$(paste -sd'|' - < "$BR/$GN")"
+job status >/dev/null
+eq "status: the owner notes queue" 1 "$(grep -c '^owner notes (raw/notes): 1 queued, [0-9]* characters, merged before any chat; 2 not committed' "$TMP/out")"
+eq "status: the digest queue line unchanged" 1 "$(grep -cE '^queue: [0-9]+ digests ' "$TMP/out")"
+rm -f "$BR/raw/notes/draft.md"
 zero_costs
 
 # the merge helpers directly: rollback removes created files and unstages

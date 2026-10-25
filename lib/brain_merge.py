@@ -7,9 +7,13 @@ these steps build that dir, check what came back, and copy back wiki/, index.md 
                                               changes: a tracked file, or an untracked file under wiki/,
                                               index.md or log.md. state/costs.json (the job's own) and
                                               raw/ are not counted.
-  brain_merge.py prepare BRAIN WORK QUEUE     copy the four parts and the queued digests' notes into
-                                              WORK; write WORK/../hand-pages (one per line) and print
-                                              the note paths (relative to WORK)
+  brain_merge.py prepare BRAIN WORK QUEUE     copy the four parts, the queued owner notes (raw/notes, to
+                                              WORK/notes/_raw-notes/, checked again) and the queued
+                                              digests' condensed notes into WORK; write
+                                              WORK/../hand-pages (one per line) and WORK/../note-shas.json
+                                              (each owner note's hash as copied) and print the note
+                                              paths (relative to WORK), an owner note's with its
+                                              citation path and date
   brain_merge.py check BRAIN WORK DATE HAND   ok, or the failure class: stray-writes, no-log-entry,
                                               log-rewritten, hand-edit, secret-in-wiki
   brain_merge.py apply BRAIN WORK CREATED     copy changed and new files back; CREATED gets the new
@@ -34,6 +38,8 @@ import brain_condense as bc  # noqa: E402
 import brain_digest as bd  # noqa: E402
 
 COPIED = ("CLAUDE.md", "index.md", "log.md")
+# Owner notes go under WORK/notes/ in a folder no host name can take (no underscore in a host name).
+OWN = "notes/_raw-notes/"
 # Commit subjects that mark a page as the job's (the nightly ingest, and the bootstrap commits that
 # wrote the first pages). Any other subject is the owner's hand.
 JOB_PREFIXES = ("ingest:", "brain:", "log:", "rules:", "design:")
@@ -106,10 +112,27 @@ def cmd_prepare(brain, work, queue):
         shutil.copytree(os.path.join(brain, "wiki"), os.path.join(work, "wiki"), symlinks=True)
     else:
         os.makedirs(os.path.join(work, "wiki"))
+    shas = {}
     for rel in open(queue, encoding="utf-8").read().split("\n"):
-        if not rel.strip():
+        rel = rel.strip()
+        if not rel:
             continue
-        src = bc.note_rel(rel.strip())
+        if rel.startswith(bd.NOTES):
+            # Copied as bytes, checked again as copied (it may have changed since the queue was made).
+            if ".." in rel.split("/"):
+                sys.exit("prepare: bad note path")
+            with open(os.path.join(brain, rel), "rb") as f:
+                b = f.read()
+            if bd.note_problem(rel, b.decode("utf-8", "replace")):
+                sys.exit("prepare: an owner note changed and now fails its check")
+            dst = OWN + rel[len(bd.NOTES):]
+            os.makedirs(os.path.dirname(os.path.join(work, dst)), exist_ok=True)
+            with open(os.path.join(work, dst), "wb") as f:
+                f.write(b)
+            shas[rel] = hashlib.sha256(b).hexdigest()
+            print("%s (owner note: cite %s, %s)" % (dst, rel, bd.note_date(brain, rel)))
+            continue
+        src = bc.note_rel(rel)
         dst = os.path.join("notes", src[len("raw/notes-condensed/"):])
         os.makedirs(os.path.dirname(os.path.join(work, dst)), exist_ok=True)
         shutil.copy2(os.path.join(brain, src), os.path.join(work, dst))
@@ -117,6 +140,7 @@ def cmd_prepare(brain, work, queue):
     with open(os.path.join(os.path.dirname(work), "hand-pages"), "w", encoding="utf-8") as f:
         for p in hand_pages(brain):
             f.write(p + "\n")
+    bd.save(os.path.join(os.path.dirname(work), "note-shas.json"), shas)
 
 
 def lines(path):
@@ -162,6 +186,13 @@ def cmd_check(brain, work, date, hand_file):
                 continue
             if rel == "CLAUDE.md":
                 if digest_of(p) != digest_of(os.path.join(brain, "CLAUDE.md")):
+                    return "stray-writes"
+                continue
+            if rel.replace(os.sep, "/").startswith(OWN):
+                # An owner note must be the copy prepare made; a new file there is a stray write.
+                want = bd.load(os.path.join(os.path.dirname(work), "note-shas.json"), {}).get(
+                    bd.NOTES + rel.replace(os.sep, "/")[len(OWN):])
+                if want is None or digest_of(p) != want:
                     return "stray-writes"
                 continue
             if top == "notes":

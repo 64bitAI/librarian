@@ -21,14 +21,18 @@ The brain is a private git repo of plain Markdown, kept by an LLM in the pattern
 
 A nightly ingest (`scripts/brain-ingest.sh` in this repo, on the swarm's primary) keeps it current
 in two stages. Stage A turns new raw chats into masked digests and then into short condensed notes.
-Stage B merges the night's notes into `wiki/`, `index.md` and `log.md` in a sandboxed temp copy;
+Stage B merges the night's notes, the owner's notes from `raw/notes/` first, into `wiki/`, `index.md` and `log.md` in a sandboxed temp copy;
 the job checks the result, copies back only those paths, commits and pushes. The README's "The
 brain" section has the details.
 
 Read rules: read `index.md` first, then only the pages it points to; answer with citations to page
 paths. Write rules: there is one writer, the ingest. Agents and people never edit `wiki/`,
 `index.md` or `log.md` directly; to add something they write to their own store or drop a new file
-in `raw/notes/`. The ingest does not fold `raw/notes/` in yet (not built yet), so notes wait there.
+in `raw/notes/` and commit it. The next ingest folds committed notes in, ahead of any chat: they are
+not condensed, a note that would carry a secret (the same masker as the wiki check), is work
+material by name or title, or is over 60,000 characters is skipped and logged, and citations name
+the note's `raw/notes/` path and commit date, so they can be checked from any clone. An edited and
+committed note is merged again; an unchanged one is not. A note that is not committed waits.
 The owner may edit a page by hand (commit it as `edit: ...`); the ingest then only appends to that
 page.
 
@@ -130,7 +134,8 @@ What is Claude-specific today:
   only as a pointer to where it is kept, unless the owner opts a topic in.
 - Raw chats are git-ignored and stay on the machine until a filter for them exists; digests,
   condensed notes and job state are git-ignored too.
-- The merging model sees only the night's notes and the wiki, never `raw/`.
+- The merging model sees only the night's notes and the wiki, never `raw/` (owner notes from
+  `raw/notes/` are copied in after their checks, not read in place).
 - One writer, and the owner's hand edits win.
 
 ## Adopting it
