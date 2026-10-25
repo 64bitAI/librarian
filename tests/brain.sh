@@ -615,6 +615,14 @@ eq "the owner's notes never changed by a run" "# Garden|- 2026-10-20: planted ga
 job status >/dev/null
 eq "status: the owner notes queue" 1 "$(grep -c '^owner notes (raw/notes): 1 queued, [0-9]* characters, merged before any chat; 2 not committed' "$TMP/out")"
 eq "status: the digest queue line unchanged" 1 "$(grep -cE '^queue: [0-9]+ digests ' "$TMP/out")"
+# a merge that writes a secret from a single owner note: that note skipped, not a failure every night
+echo 1 > "$BR/raw/.state/queue-chars"
+rc="$(CLAUDE_MODE=secret job run)"
+eq "owner note, secret in the merge: refused" 1 "$rc"
+eq "owner note, secret in the merge: skipped with the class" "secret-in-wiki" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["raw/notes/sub/later.md"]["why"])' "$BR/raw/.state/skipped.json")"
+eq "owner note, secret in the merge: it leaves the queue" 0 "$(python3 "$DIG" notes "$BR" pending | awk '{print $1}')"
+eq "owner note, secret in the merge: one alert" 1 "$(grep -c 'skipped an owner note whose merge would write a secret' "$HELD")"
+clean "owner note, secret in the merge"
 rm -f "$BR/raw/notes/draft.md"
 zero_costs
 

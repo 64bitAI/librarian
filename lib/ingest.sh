@@ -223,7 +223,7 @@ prompt() {
   cat <<EOF
 You are the brain's ingest job. The working directory is a copy of the brain, a markdown wiki:
 CLAUDE.md (its schema and rules: follow them exactly), index.md, log.md, wiki/, and notes/ with
-tonight's condensed notes. Read CLAUDE.md and index.md first, then the existing pages you need, then
+tonight's notes. Read CLAUDE.md and index.md first, then the existing pages you need, then
 merge exactly these notes, and no others, in this order (paths relative to this directory):
 
 $(printf '%s\n' "$NOTES" | sed 's/^/- /')
@@ -317,6 +317,17 @@ if [ "$verdict" = hand-edit ]; then
   log "hand-edit: skipped $(head -1 "$QUEUE") (it would change a hand-edited page)"
   last_run "skipped 1 note (hand-edit)"
   matrix_alert "brain: ingest skipped a note that would change a hand-edited page (hand-edit; raw/.state/skipped.json)" || true
+  exit 1
+fi
+# A secret in the merge from an owner note must not fail every night either: with several notes the
+# next run takes one; a single owner note that does it is skipped (until it is edited) with one alert.
+# Chat notes keep failing as before (their digests are masked; a leak there is the job's to fix).
+if [ "$verdict" = secret-in-wiki ] && grep -q '^raw/notes/' "$QUEUE"; then
+  if [ "$N" -gt 1 ]; then echo 1 > "$QSIZE"; log "secret-in-wiki: $N notes refused, an owner note among them; the next runs take one note at a time"; fail "$verdict"; fi
+  python3 "$DIGEST" skip "$BRAIN" secret-in-wiki "$WORKDIR/note-shas.json" < "$QUEUE" >/dev/null
+  log "secret-in-wiki: skipped $(head -1 "$QUEUE") (its merge would write a secret)"
+  last_run "skipped 1 owner note (secret-in-wiki)"
+  matrix_alert "brain: ingest skipped an owner note whose merge would write a secret (secret-in-wiki; raw/.state/skipped.json)" || true
   exit 1
 fi
 [ "$verdict" = ok ] || fail "$verdict"
