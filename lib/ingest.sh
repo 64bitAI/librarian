@@ -298,6 +298,15 @@ commit_costs "\$$cost, $N notes"
 log "claude: exit $rc, $subtype, \$$cost, stderr $(wc -l < "$BRAIN/raw/.state/claude-stderr" | tr -d ' ') lines (raw/.state/claude-stderr)"
 if [ "$rc" != 0 ] || [ "$iserr" != 0 ] || [ "$subtype" != success ]; then
   case "$subtype" in error_max*)
+    # A lone owner note too big for one merge would block every chat behind it: skip it (until it
+    # is edited) with one alert.
+    if [ "$N" = 1 ] && grep -q '^raw/notes/' "$QUEUE"; then
+      python3 "$DIGEST" skip "$BRAIN" "$subtype" "$WORKDIR/note-shas.json" < "$QUEUE" >/dev/null
+      log "$subtype: skipped $(head -1 "$QUEUE") (one owner note was too much for one merge; split it)"
+      last_run "skipped 1 owner note ($subtype)"
+      matrix_alert "brain: ingest skipped an owner note too big for one merge ($subtype; raw/.state/skipped.json)" || true
+      exit 1
+    fi
     q="$(( TAKEN / 2 ))"; [ "$q" -ge 1 ] || q=1; echo "$q" > "$QSIZE"; log "queue limit now $q characters" ;;
   esac
   fail "claude-$subtype-exit$rc"

@@ -119,10 +119,10 @@ def cmd_prepare(brain, work, queue):
             continue
         if rel.startswith(bd.NOTES):
             # Copied as bytes, checked again as copied (it may have changed since the queue was made).
-            if ".." in rel.split("/"):
-                sys.exit("prepare: bad note path")
-            with open(os.path.join(brain, rel), "rb") as f:
-                b = f.read()
+            try:
+                b = bd.note_bytes(brain, rel)
+            except OSError:
+                sys.exit("prepare: an owner note is not a plain file inside raw/notes")
             if bd.note_problem(rel, b.decode("utf-8", "replace")):
                 sys.exit("prepare: an owner note changed and now fails its check")
             dst = OWN + rel[len(bd.NOTES):]

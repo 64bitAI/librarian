@@ -31,7 +31,7 @@ paths. Write rules: there is one writer, the ingest. Agents and people never edi
 in `raw/notes/` and commit it. The next ingest folds committed notes in, ahead of any chat and even
 on a night with no new chats (the ingest's gate opens for a waiting note): they are
 not condensed, a note that would carry a secret (the same masker as the wiki check), is work
-material by name or title, or is over 60,000 characters is skipped and logged, and citations name
+material by name or title, or is over 20,000 characters (split it) is skipped and logged, and citations name
 the note's `raw/notes/` path and commit date, so they can be checked from any clone. An edited and
 committed note is merged again; an unchanged one is not. A note that is not committed waits.
 The owner may edit a page by hand (commit it as `edit: ...`); the ingest then only appends to that

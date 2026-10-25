@@ -623,6 +623,27 @@ eq "owner note, secret in the merge: skipped with the class" "secret-in-wiki" "$
 eq "owner note, secret in the merge: it leaves the queue" 0 "$(python3 "$DIG" notes "$BR" pending | awk '{print $1}')"
 eq "owner note, secret in the merge: one alert" 1 "$(grep -c 'skipped an owner note whose merge would write a secret' "$HELD")"
 clean "owner note, secret in the merge"
+# symlinks never reach the merge (a committed link, a linked folder); odd names and big notes skipped
+printf 'OUTSIDEMARK\n' > "$TMP/outside.txt"; mkdir -p "$TMP/outdir"; printf '# In\nOUTSIDEMARK\n' > "$TMP/outdir/inner.md"
+ln -s "$TMP/outside.txt" "$BR/raw/notes/link.md"; ln -s "$TMP/outdir" "$BR/raw/notes/linkdir"
+printf '# Bad\n- odd name\n' > "$BR/raw/notes/bad
+name.md"
+python3 -c 'print("# Big\n" + "x" * 20001)' > "$BR/raw/notes/big.md"
+g add raw/notes/link.md raw/notes/linkdir raw/notes/big.md "raw/notes/bad
+name.md"; g commit -qm "note: odd ones"; g push -q
+out="$(python3 "$DIG" notes "$BR" check)"
+eq "symlinks: never listed, never queued" "0 0" "$(printf '%s\n' "$out" | grep -c link) $(python3 "$CON" queue "$BR" 999999999 | grep -c 'link\|inner')"
+eq "symlinks: a path through a linked folder is refused" "False False" "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import brain_digest as b; print(b.inside(sys.argv[2], "raw/notes/linkdir/inner.md"), b.inside(sys.argv[2], "raw/notes/link.md"))' "$TMP/scripts" "$BR")"
+eq "a name with a newline: skipped, shown safely" 1 "$(printf '%s\n' "$out" | grep -c 'skipped bad-name: raw/notes/bad?name.md')"
+eq "a note over 20,000 characters: skipped, split it" 1 "$(printf '%s\n' "$out" | grep -c 'skipped too-large: raw/notes/big.md (split it into notes under 20000 characters)')"
+eq "odd notes: nothing left to queue" 0 "$(python3 "$DIG" notes "$BR" pending | awk '{print $1}')"
+# a lone owner note that hits the turn limit: skipped with one alert, not a nightly failure
+printf '# Turns\n- a note\n' > "$BR/raw/notes/turns.md"; g add raw/notes/turns.md; g commit -qm "note: turns"; g push -q
+echo 1 > "$BR/raw/.state/queue-chars"
+eq "owner note at the turn limit: refused" 1 "$(CLAUDE_MODE=fail job run)"
+eq "owner note at the turn limit: skipped with the class" "error_max_turns" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["raw/notes/turns.md"]["why"])' "$BR/raw/.state/skipped.json")"
+eq "owner note at the turn limit: it leaves the queue, one alert" "0 1" "$(python3 "$DIG" notes "$BR" pending | awk '{print $1}') $(grep -c 'skipped an owner note too big for one merge (error_max_turns' "$HELD")"
+clean "owner note at the turn limit"
 rm -f "$BR/raw/notes/draft.md"
 zero_costs
 
@@ -675,6 +696,18 @@ eq "gate: a committed note waiting opens it" 0 "$(bash "$TMP/gates/brain-ingest.
 echo 1 > "$BR/raw/.state/queue-chars"
 eq "gate: the quiet night's run merges the note" "0 1" "$(job run) $(grep -c '^- notes/_raw-notes/quiet.md ' "$CLOG.prompt")"
 eq "gate: ingested, it shuts again" 10 "$(bash "$TMP/gates/brain-ingest.sh" "$BR" >/dev/null; echo $?)"
+# a note pushed from another clone: the gate fetches and sees it on the upstream branch
+git clone -q -b main "$OR" "$TMP/brain3"
+printf '# Elsewhere\n- written on another machine\n' > "$TMP/brain3/raw/notes/elsewhere.md"
+git -C "$TMP/brain3" add raw/notes/elsewhere.md; git -C "$TMP/brain3" commit -qm "note: elsewhere"; git -C "$TMP/brain3" push -q
+eq "gate: a note pushed elsewhere opens it" 0 "$(bash "$TMP/gates/brain-ingest.sh" "$BR" >/dev/null; echo $?)"
+eq "gate: ... and the work tree is untouched" no "$([ -e "$BR/raw/notes/elsewhere.md" ] && echo yes || echo no)"
+echo 1 > "$BR/raw/.state/queue-chars"
+eq "gate: that night's run pulls and merges it" "0 1" "$(job run) $(grep -c '^- notes/_raw-notes/elsewhere.md ' "$CLOG.prompt")"
+eq "gate: then it shuts" 10 "$(bash "$TMP/gates/brain-ingest.sh" "$BR" >/dev/null; echo $?)"
+g remote set-url origin "$TMP/no-such-origin.git"
+eq "gate: an unreachable remote fails open to what it has" 10 "$(bash "$TMP/gates/brain-ingest.sh" "$BR" >/dev/null 2>&1; echo $?)"
+g remote set-url origin "$OR"
 
 # no brain configured
 grep -v '^SWARM_BRAIN_DIR=' "$SW/.env" > "$SW/.env.new" && mv "$SW/.env.new" "$SW/.env"

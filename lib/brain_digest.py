@@ -567,6 +567,7 @@ def cmd_mark(brain, why=None, shas_file=None):
 
 # --- owner notes (raw/notes) -----------------------------------------------------------------------
 NOTES = "raw/notes/"
+NOTE_CAP = 20000
 
 
 def _git(brain, *args):
@@ -583,20 +584,42 @@ def note_files(brain):
     ones not committed yet (new, or edited since). Only a committed note is queued, so a citation to
     raw/notes/<file> can be checked from any clone."""
     try:
-        head = _names(_git(brain, "ls-tree", "-r", "-z", "--name-only", "HEAD", "--", "raw/notes"))
+        # Regular files only: a committed symlink (mode 120000) or submodule could point outside.
+        head = set(e.split("\t", 1)[1] for e in _git(brain, "ls-tree", "-r", "-z", "HEAD", "--", "raw/notes").split("\0")
+                   if "\t" in e and e.split(" ", 1)[0] in ("100644", "100755"))
         changed = _names(_git(brain, "diff", "--name-only", "-z", "HEAD", "--", "raw/notes"))
         new = _names(_git(brain, "ls-files", "-z", "-o", "--exclude-standard", "--", "raw/notes"))
     except (OSError, subprocess.CalledProcessError):
         return [], []
     md = lambda p: p.endswith(".md") and not os.path.basename(p).startswith(".")
-    ready = sorted(p for p in head - changed if md(p) and os.path.isfile(os.path.join(brain, p)))
+    ready = sorted(p for p in head - changed if md(p) and os.path.isfile(os.path.join(brain, p))
+                   and inside(brain, p))
     return ready, sorted(p for p in (changed | new) if md(p))
+
+
+def inside(brain, rel):
+    """The note is a plain file under raw/notes: no symlink anywhere on its path, no '..', and
+    nothing outside raw/notes once resolved."""
+    parts = rel.split("/")
+    if not rel.startswith(NOTES) or ".." in parts:
+        return False
+    if any(os.path.islink(os.path.join(brain, *parts[:i])) for i in range(1, len(parts) + 1)):
+        return False
+    base = os.path.realpath(os.path.join(brain, NOTES))
+    return os.path.realpath(os.path.join(brain, rel)).startswith(base + os.sep)
+
+
+def note_bytes(brain, rel):
+    """A note's bytes, refused (OSError) unless it is a plain file inside raw/notes."""
+    if not inside(brain, rel):
+        raise OSError("not a plain file inside raw/notes")
+    with open(os.path.join(brain, rel), "rb") as f:
+        return f.read()
 
 
 def note_text(brain, rel):
     """(text, sha of the bytes): the hash the queue, the copy into stage B and the mark all use."""
-    with open(os.path.join(brain, rel), "rb") as f:
-        b = f.read()
+    b = note_bytes(brain, rel)
     return b.decode("utf-8", "replace"), hashlib.sha256(b).hexdigest()
 
 
@@ -611,8 +634,11 @@ def note_date(brain, rel):
 def note_problem(rel, text):
     """Why an owner note may not go to the merge, or None. The same strict masker the merge's
     secret-in-wiki check uses, line by line; work material by its name or title (BRAIN_EXCLUDE); a
-    note over the digest cap (notes are meant to be short)."""
-    if len(text) > CAP:
+    note over NOTE_CAP (notes are meant to be short: one too big for a merge would block the queue;
+    split it); a name with a newline or control character."""
+    if re.search(r"[\x00-\x1f\x7f]", rel):
+        return "bad-name"
+    if len(text) > NOTE_CAP:
         return "too-large"
     title = next((l.lstrip("#").strip() for l in text.splitlines() if l.startswith("#")), "")
     if excluded(excluder(), text, rel[len(NOTES):], title):
@@ -660,7 +686,9 @@ def cmd_notes(brain, op):
         skipped[rel] = {"sha": v["sha"], "why": v["problem"],
                         "at": datetime.datetime.now().isoformat(timespec="seconds")}
         stats["skipped_" + v["problem"]] += 1
-        out.append("skipped %s: %s" % (v["problem"], rel))
+        out.append("skipped %s: %s%s" % (v["problem"], re.sub(r"[\x00-\x1f\x7f]", "?", rel),
+                                          " (split it into notes under %d characters)" % NOTE_CAP
+                                          if v["problem"] == "too-large" else ""))
     if out:
         save(os.path.join(sd, "ingested.json"), ing)
         save(os.path.join(sd, "skipped.json"), skipped)
