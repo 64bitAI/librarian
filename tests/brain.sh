@@ -666,6 +666,15 @@ eq "broken gate: the job runs anyway" "0 1" "$(gated) $(grep -c ' ok 0 notes$' "
 eq "broken gate: warned, its stderr in the log" "1 1" "$(grep -c 'gate .*brain-ingest failed (exit 7); running anyway' "$TMP/out") $(grep -cx broken "$TMP/out")"
 rm -rf "$SW/gates"
 eq "gate: the log has counts only" 0 "$(grep -c 'hello\|more' "$TMP/out")"
+# a quiet night with one committed owner note waiting: the gate opens; once it is ingested, gated again
+eq "gate: quiet night, no note: gated" 10 "$(bash "$TMP/gates/brain-ingest.sh" "$BR" >/dev/null; echo $?)"
+printf '# Quiet\n- a note on a quiet night\n' > "$BR/raw/notes/quiet.md"
+eq "gate: an uncommitted note keeps it shut" 10 "$(bash "$TMP/gates/brain-ingest.sh" "$BR" >/dev/null; echo $?)"
+g add raw/notes/quiet.md; g commit -qm "note: quiet"; g push -q
+eq "gate: a committed note waiting opens it" 0 "$(bash "$TMP/gates/brain-ingest.sh" "$BR" >/dev/null; echo $?)"
+echo 1 > "$BR/raw/.state/queue-chars"
+eq "gate: the quiet night's run merges the note" "0 1" "$(job run) $(grep -c '^- notes/_raw-notes/quiet.md ' "$CLOG.prompt")"
+eq "gate: ingested, it shuts again" 10 "$(bash "$TMP/gates/brain-ingest.sh" "$BR" >/dev/null; echo $?)"
 
 # no brain configured
 grep -v '^SWARM_BRAIN_DIR=' "$SW/.env" > "$SW/.env.new" && mv "$SW/.env.new" "$SW/.env"

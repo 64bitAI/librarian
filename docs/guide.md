@@ -28,7 +28,8 @@ brain" section has the details.
 Read rules: read `index.md` first, then only the pages it points to; answer with citations to page
 paths. Write rules: there is one writer, the ingest. Agents and people never edit `wiki/`,
 `index.md` or `log.md` directly; to add something they write to their own store or drop a new file
-in `raw/notes/` and commit it. The next ingest folds committed notes in, ahead of any chat: they are
+in `raw/notes/` and commit it. The next ingest folds committed notes in, ahead of any chat and even
+on a night with no new chats (the ingest's gate opens for a waiting note): they are
 not condensed, a note that would carry a secret (the same masker as the wiki check), is work
 material by name or title, or is over 60,000 characters is skipped and logged, and citations name
 the note's `raw/notes/` path and commit date, so they can be checked from any clone. An edited and
