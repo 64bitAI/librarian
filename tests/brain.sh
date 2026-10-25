@@ -8,7 +8,7 @@ set -u
 SRC="$(cd "$(dirname "$0")/../.." && pwd)"; TMP="$(mktemp -d)"
 OPID=""; trap '[ -z "$OPID" ] || kill "$OPID" 2>/dev/null; rm -rf "$TMP"' EXIT
 . "$(dirname "$0")/.hermetic"
-cp -R "$SRC/scripts" "$SRC/infra" "$TMP/"; mkdir -p "$TMP/bin"
+cp -R "$SRC/scripts" "$SRC/infra" "$SRC/gates" "$TMP/"; mkdir -p "$TMP/bin"
 # common.sh puts the real tools first on PATH: the copy under test keeps the stubs in front, so the real
 # claude can never run from here.
 sed -i.bak "s|^export PATH=\"/opt/homebrew/bin|export PATH=\"$TMP/bin:/opt/homebrew/bin|" "$TMP/scripts/common.sh"
@@ -17,6 +17,8 @@ grep -q "^export PATH=\"$TMP/bin:" "$TMP/scripts/common.sh" || { echo "FAIL coul
 # --- the claude stub ----------------------------------------------------------------------------------
 cat > "$TMP/bin/claude" <<'SH'
 #!/bin/bash
+# NO_CLAUDE: a gated run must never get here, in either stage
+[ -z "${NO_CLAUDE:-}" ] || { echo called >> "$CLOG.forbidden"; exit 97; }
 case " $* " in *" --allowedTools "*) ;; *)
   # stage A: one condense call. Its own record files, so stage B's checks see only the merge.
   : > "$CLOG.c"; for a in "$@"; do printf '%s\n' "$a" >> "$CLOG.c"; done
@@ -556,6 +558,37 @@ clean "rollback helper"
 
 # the unit: a two-hour ceiling
 eq "systemd: TimeoutStartSec=2h" 1 "$(grep -c '^TimeoutStartSec=2h$' "$TMP/infra/systemd/swarm-brain-ingest.service.tmpl")"
+
+# --- the gate (gates/brain-ingest.sh): no new chat and no digest due, so Claude never starts ------------
+python3 "$DIG" digest "$BR" >/dev/null; python3 "$DIG" queue "$BR" 999999999 | python3 "$DIG" mark "$BR" >/dev/null
+eq "fresh: nothing new after a digest pass" 0 "$(python3 "$DIG" fresh "$BR")"
+eq "pending: nothing due" "0 0" "$(python3 "$DIG" pending "$BR")"
+gated() { : > "$CLOG.forbidden"; : > "$OLOG"; NO_CLAUDE=1 job run; }
+eq "gated: exit 0" 0 "$(gated)"
+eq "gated: neither claude nor the local model called" "0 0" "$(grep -c . "$CLOG.forbidden") $(grep -c . "$OLOG")"
+eq "gated: one log line with the reason" 1 "$(grep -c ' gated: no new chats and no digest to ingest$' "$TMP/out")"
+eq "gated: the last run says so" 1 "$(grep -c '^[0-9T:-]* gated: no new chats and no digest to ingest$' "$BR/raw/.state/last-run")"
+clean "gated"
+NEW="$BR/raw/chats/claude-code/h1/-proj-e/n1.jsonl"; mkdir -p "$(dirname "$NEW")"
+printf '%s\n' '{"type":"user","timestamp":"2026-10-03T09:00:00Z","sessionId":"n1","cwd":"/home/o/x","message":{"role":"user","content":"hello"}}' > "$NEW"
+eq "fresh: a new chat counts" 1 "$(python3 "$DIG" fresh "$BR")"
+eq "gate: a new chat opens it" 0 "$(bash "$TMP/gates/brain-ingest.sh" "$BR" >/dev/null; echo $?)"
+printf '%s\n' '{"type":"user","timestamp":"2026-10-03T09:01:00Z","sessionId":"n1","message":{"role":"user","content":"more"}}' >> "$NEW"
+python3 "$DIG" digest "$BR" >/dev/null
+eq "fresh: none once digested" 0 "$(python3 "$DIG" fresh "$BR")"
+eq "gate: a digest due opens it" 0 "$(bash "$TMP/gates/brain-ingest.sh" "$BR" >/dev/null; echo $?)"
+# the swarm's own gate beats the repo's
+mkdir -p "$SW/gates"; printf 'echo "owner pause"\nexit 10\n' > "$SW/gates/brain-ingest"
+eq "swarm gate: exit 0" 0 "$(gated)"
+eq "swarm gate: its reason, no claude" "1 0" "$(grep -c '^[0-9T:-]* gated: owner pause$' "$BR/raw/.state/last-run") $(grep -c . "$CLOG.forbidden")"
+python3 "$DIG" queue "$BR" 999999999 | python3 "$DIG" mark "$BR" >/dev/null
+printf 'exit 0\n' > "$SW/gates/brain-ingest"
+eq "swarm gate says run: the job runs" "0 1" "$(gated) $(grep -c ' ok 0 notes$' "$BR/raw/.state/last-run")"
+printf 'echo broken >&2\nexit 7\n' > "$SW/gates/brain-ingest"
+eq "broken gate: the job runs anyway" "0 1" "$(gated) $(grep -c ' ok 0 notes$' "$BR/raw/.state/last-run")"
+eq "broken gate: warned, its stderr in the log" "1 1" "$(grep -c 'gate .*brain-ingest failed (exit 7); running anyway' "$TMP/out") $(grep -cx broken "$TMP/out")"
+rm -rf "$SW/gates"
+eq "gate: the log has counts only" 0 "$(grep -c 'hello\|more' "$TMP/out")"
 
 # no brain configured
 grep -v '^SWARM_BRAIN_DIR=' "$SW/.env" > "$SW/.env.new" && mv "$SW/.env.new" "$SW/.env"

@@ -15,6 +15,8 @@
 # digests, state). Spend (both stages) is kept per calendar month in the brain's tracked
 # state/costs.json, committed after each stage, so the cap follows the brain across machines; a run
 # that would leave less than BRAIN_RUN_MIN_USD under the month's cap is skipped with one alert a month.
+# A gate runs first (gates/brain-ingest.sh, or the swarm's <state>/gates/brain-ingest; run_gated in
+# common.sh): with no new chat and no digest due the run records "gated: <reason>" and starts no model.
 # Only the primary ingests (one writer); a lock stops overlapping runs. A merge that would change a
 # hand-edited page shrinks the next queue to one note; a single note that does it is skipped (one
 # alert). Never prints a digest's or a note's contents or a secret: counts, paths and error classes only.
@@ -125,6 +127,9 @@ esac
 
 need_brain
 if [ "$(role_get role)" != primary ]; then log "not the primary: the brain has one writer; nothing done"; exit 0; fi
+# The gate (gates/brain-ingest.sh, or the swarm's own): no new chat and no digest due starts no model.
+rc=0; run_gated brain-ingest "$BRAIN" || rc=$?
+if [ "$rc" = 10 ]; then log "gated: $GATE_REASON"; last_run "gated: $GATE_REASON"; exit 0; fi
 cd "$BRAIN"
 mkdir -p raw/.state
 TODAY="$(date +%F)"

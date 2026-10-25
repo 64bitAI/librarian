@@ -6,6 +6,7 @@
   brain_digest.py mark   BRAIN < paths    record those digests as ingested (their current content hash)
   brain_digest.py skip   BRAIN WHY < paths  the same, recorded as skipped for WHY (raw/.state/skipped.json)
   brain_digest.py pending BRAIN           count and characters of digests not yet ingested
+  brain_digest.py fresh  BRAIN            how many raw chats are new or changed since the last digest pass
   brain_digest.py cost   BRAIN add USD KIND N   append one run's spend to this month (state/costs.json, tracked)
   brain_digest.py cost   BRAIN month      this month's spend in USD
   brain_digest.py cost   BRAIN alerted    exit 0 if this month's cap alert was already sent
@@ -358,6 +359,55 @@ def sha(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def signature(p):
+    st = os.stat(p)
+    return {"size": st.st_size, "mtime": int(st.st_mtime)}
+
+
+def cc_chats(brain):
+    """The Claude Code chats a digest pass reads, as (path, host, project, kind, digest path under
+    raw/digests/claude-code/): each session (kind "session"), and each subagent sidechain whose parent
+    session is not here (kind "subagent"); one whose parent is here comes back with kind None."""
+    cc = os.path.join(brain, "raw", "chats", "claude-code")
+    for root, dirs, files in os.walk(cc):
+        dirs.sort()
+        for fn in sorted(files):
+            if not fn.endswith(".jsonl"):
+                continue
+            p = os.path.join(root, fn)
+            parts = os.path.relpath(p, cc).split(os.sep)
+            if len(parts) < 3:
+                continue
+            host, project = parts[0], parts[1]
+            if len(parts) == 3:
+                yield p, host, project, "session", "%s/%s/%s.md" % (host, project, fn[:-6])
+            elif len(parts) == 5 and parts[3] == "subagents":
+                # A subagent's sidechain: only when its parent session is not here.
+                if os.path.exists(os.path.join(cc, host, project, parts[2] + ".jsonl")):
+                    yield p, host, project, None, None
+                else:
+                    yield p, host, project, "subagent", "%s/%s/%s-%s.md" % (host, project, parts[2], fn[:-6])
+
+
+def ai_exports(brain):
+    """The claude.ai exports, as (path, account), oldest first: date folders sort that way, so a later
+    export wins."""
+    ai = os.path.join(brain, "raw", "chats", "claude-ai")
+    exports = []
+    for root, dirs, files in os.walk(ai):
+        if "conversations.json" in files:
+            exports.append(os.path.join(root, "conversations.json"))
+    return [(p, os.path.relpath(p, ai).split(os.sep)[0]) for p in sorted(exports)]
+
+
+def cmd_fresh(brain):
+    """How many raw chats are new or changed since the last digest pass (read only; the ingest's gate)."""
+    done = load(os.path.join(brain, "raw", ".state", "digested.json"), {})
+    n = sum(1 for p, _, _, kind, _ in cc_chats(brain) if kind and done.get(os.path.relpath(p, brain)) != signature(p))
+    n += sum(1 for p, _ in ai_exports(brain) if done.get(os.path.relpath(p, brain)) != signature(p))
+    print(n)
+
+
 def cmd_digest(brain):
     sd = os.path.join(brain, "raw", ".state")
     done = load(os.path.join(sd, "digested.json"), {})
@@ -378,61 +428,34 @@ def cmd_digest(brain):
         if excluded(rx, head, *extra):
             stats["excluded"] += 1
             drop_digest(brain, index, rel)
-    cc = os.path.join(brain, "raw", "chats", "claude-code")
-    for root, dirs, files in os.walk(cc):
-        dirs.sort()
-        for fn in sorted(files):
-            if not fn.endswith(".jsonl"):
-                continue
-            p = os.path.join(root, fn)
-            parts = os.path.relpath(p, cc).split(os.sep)
-            if len(parts) < 3:
-                continue
-            host, project = parts[0], parts[1]
-            if len(parts) == 3:
-                kind, out = "session", "%s/%s/%s.md" % (host, project, fn[:-6])
-            elif len(parts) == 5 and parts[3] == "subagents":
-                # A subagent's sidechain: only when its parent session is not here.
-                if os.path.exists(os.path.join(cc, host, project, parts[2] + ".jsonl")):
-                    stats["subagent_skipped"] += 1
-                    continue
-                kind, out = "subagent", "%s/%s/%s-%s.md" % (host, project, parts[2], fn[:-6])
-            else:
-                continue
-            st = os.stat(p)
-            key = os.path.relpath(p, brain)
-            sig = {"size": st.st_size, "mtime": int(st.st_mtime)}
-            if done.get(key) == sig:
-                stats["unchanged"] += 1
-                continue
-            text, first, last, n = digest_session(p, project, kind == "subagent")
-            rel = os.path.join("raw", "digests", "claude-code", out)
-            if n == 0:
-                stats["empty"] += 1
-                done[key] = sig
-                continue
-            if excluded(rx, text, host, project):
-                stats["excluded"] += 1
-                drop_digest(brain, index, rel)
-                done[key] = sig
-                continue
-            text = cap(mask(text))
-            write_digest(brain, rel, text)
-            index[rel] = {"first": first, "last": last, "chars": len(text), "sha": sha(text), "source": key}
+    for p, host, project, kind, out in cc_chats(brain):
+        if kind is None:
+            stats["subagent_skipped"] += 1
+            continue
+        key, sig = os.path.relpath(p, brain), signature(p)
+        if done.get(key) == sig:
+            stats["unchanged"] += 1
+            continue
+        text, first, last, n = digest_session(p, project, kind == "subagent")
+        rel = os.path.join("raw", "digests", "claude-code", out)
+        if n == 0:
+            stats["empty"] += 1
             done[key] = sig
-            stats["written_" + kind] += 1
-            stats["chars"] += len(text)
-            largest = max(largest, len(text))
-    ai = os.path.join(brain, "raw", "chats", "claude-ai")
-    exports = []
-    for root, dirs, files in os.walk(ai):
-        if "conversations.json" in files:
-            exports.append(os.path.join(root, "conversations.json"))
-    for p in sorted(exports):  # date folders sort oldest first, so a later export wins
-        account = os.path.relpath(p, ai).split(os.sep)[0]
-        st = os.stat(p)
-        key = os.path.relpath(p, brain)
-        sig = {"size": st.st_size, "mtime": int(st.st_mtime)}
+            continue
+        if excluded(rx, text, host, project):
+            stats["excluded"] += 1
+            drop_digest(brain, index, rel)
+            done[key] = sig
+            continue
+        text = cap(mask(text))
+        write_digest(brain, rel, text)
+        index[rel] = {"first": first, "last": last, "chars": len(text), "sha": sha(text), "source": key}
+        done[key] = sig
+        stats["written_" + kind] += 1
+        stats["chars"] += len(text)
+        largest = max(largest, len(text))
+    for p, account in ai_exports(brain):
+        key, sig = os.path.relpath(p, brain), signature(p)
         if done.get(key) == sig:
             stats["unchanged"] += 1
             continue
@@ -589,6 +612,8 @@ def main(argv):
         cmd_queue(brain, int(argv[3]) if len(argv) > 3 else 250000)
     elif op == "pending":
         cmd_pending(brain)
+    elif op == "fresh":
+        cmd_fresh(brain)
     elif op == "mark":
         cmd_mark(brain)
     elif op == "skip":
