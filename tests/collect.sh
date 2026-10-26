@@ -77,7 +77,11 @@ cc -Users-o-src-mixed m1.jsonl /Users/o/src/mixed
 cc -Users-o-src-mixed m2.jsonl /Users/o/src/wrk/thing
 cc -Users-o-src-mixed m2/subagents/agent-b.jsonl /Users/o/src/mixed
 cc -Users-o-src-mixed m3.jsonl /Users/o/src/mixed "wrk rollout plan"
-cc -Users-o-src-other o1.jsonl /private/var/folders/zz/T/tmp.q1/cwd
+# A session that started in a temp folder goes; one that only visits the scratchpad later stays.
+cc -Users-o-src-other o1.jsonl /Users/o/src/other
+sed -i.bak 's|"cwd":"/Users/o/src/personal"|"cwd":"/private/var/folders/zz/T/tmp.q1/cwd"|' "$HOME/.claude/projects/-Users-o-src-other/o1.jsonl"
+rm -f "$HOME/.claude/projects/-Users-o-src-other/o1.jsonl.bak"
+cc -Users-o-src-personal s8.jsonl /private/tmp/claude-501/x/scratchpad
 cx() { # cx NAME ORIGINATOR CWD: a Codex rollout (an empty CWD writes no session_meta)
   local d="$HOME/.codex/sessions/2026/10/01"; mkdir -p "$d"
   {
@@ -86,7 +90,10 @@ cx() { # cx NAME ORIGINATOR CWD: a Codex rollout (an empty CWD writes no session
   } > "$d/rollout-2026-10-01T10-00-00-$1.jsonl"
 }
 cx a codex_cli_rs "$P"; cx b codex_cli_rs /Users/o/src/employerco/api; cx c codex_exec "$P"; cx d codex_cli_rs ""
-cx e codex_cli_rs /tmp/x
+cx e codex_cli_rs /tmp/x; cx f codex_cli_rs "$P"
+echo '{"type":"turn_context","payload":{"cwd":"/tmp/later"}}' >> "$HOME/.codex/sessions/2026/10/01/rollout-2026-10-01T10-00-00-f.jsonl"
+cx g codex_cli_rs "$P"
+echo '{"type":"turn_context","payload":{"cwd":"/Users/o/src/wrk/api"}}' >> "$HOME/.codex/sessions/2026/10/01/rollout-2026-10-01T10-00-00-g.jsonl"
 touch -t 202001021234.56 "$HOME/.codex/sessions/2026/10/01/rollout-2026-10-01T10-00-00-a.jsonl"
 gm() { # gm SLUG ROOT|-: a Gemini slug with one session (- writes no .project_root)
   local d="$HOME/.gemini/tmp/$1"; mkdir -p "$d/chats" "$d/logs"
@@ -99,7 +106,9 @@ mkdir -p "$HOME/.gemini/tmp/0123abcd"; echo '[]' > "$HOME/.gemini/tmp/0123abcd/l
 WANT="claude-code/host1/-Users-o-src-mixed/m1.jsonl
 claude-code/host1/-Users-o-src-personal/s1.jsonl
 claude-code/host1/-Users-o-src-personal/s1/subagents/agent-a.jsonl
+claude-code/host1/-Users-o-src-personal/s8.jsonl
 codex/host1/2026/10/01/rollout-2026-10-01T10-00-00-a.jsonl
+codex/host1/2026/10/01/rollout-2026-10-01T10-00-00-f.jsonl
 gemini/host1/personal/.project_root
 gemini/host1/personal/session-2026-10-01T10-00-personal.jsonl"
 tree() { (cd "$1" && find . -type f | sed 's|^\./||' | LC_ALL=C sort); }
@@ -119,7 +128,7 @@ eq "collect-list: missing sources are skipped" "" "$(python3 "$TMP/scripts/brain
 setenv; setrole primary
 out="$(run run)"
 eq "primary: exit 0" 1 "$(printf '%s\n' "$out" | grep -c '^rc=0$')"
-eq "primary: one line, the count" "1 1" "$(lines "$out") $(printf '%s\n' "$out" | grep -c 'collected 6 chat files into the brain')"
+eq "primary: one line, the count" "1 1" "$(lines "$out") $(printf '%s\n' "$out" | grep -c 'collected 8 chat files into the brain')"
 eq "primary: exactly the listed files arrive" "$WANT" "$(tree "$BR/raw/chats")"
 eq "primary: the list handed to rsync" "$WANT" "$(LC_ALL=C sort "$RLOG.list")"
 eq "primary: a session keeps its mtime" "$(mtime "$HOME/.claude/projects/-Users-o-src-personal/s1.jsonl")" "$(mtime "$BR/raw/chats/claude-code/host1/-Users-o-src-personal/s1.jsonl")"
@@ -144,7 +153,7 @@ setenv SWARM_PAIR_SSH=peer.example; setrole standby; rm -f "$S/.brain-collected"
 mkdir -p "$REMOTE/srv/brain/raw"   # the primary's brain (raw/chats is made by the push)
 out="$(run run)"
 eq "standby: exit 0, one line" "1 1" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(lines "$out")"
-eq "standby: says where" 1 "$(printf '%s\n' "$out" | grep -c 'copied 6 chat files to the primary')"
+eq "standby: says where" 1 "$(printf '%s\n' "$out" | grep -c 'copied 8 chat files to the primary')"
 eq "standby: asks the primary for its brain" 1 "$(grep -c 'scripts/stack-role.sh brain' "$SLOG")"
 eq "standby: pushes over the pair ssh to that brain" 1 "$(grep -c -- '-e ssh .*peer.example:/srv/brain/raw/chats/$' "$RLOG")"
 eq "standby: exactly the listed files arrive" "$WANT" "$(tree "$REMOTE/srv/brain/raw/chats")"
@@ -180,7 +189,7 @@ setenv SWARM_PAIR_SSH=peer.example; setrole standby; rm -f "$S/.brain-collected"
 : > "$RLOG"; : > "$SLOG"; rm -f "$RLOG.lock"
 out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
 eq "standby-sync: exit 0" 1 "$(printf '%s\n' "$out" | grep -c '^rc=0$')"
-eq "standby-sync: chats pushed" 1 "$(printf '%s\n' "$out" | grep -c 'copied 6 chat files to the primary')"
+eq "standby-sync: chats pushed" 1 "$(printf '%s\n' "$out" | grep -c 'copied 8 chat files to the primary')"
 eq "standby-sync: the pull held the sync lock, the collector did not" "1 0 1" "$(cat "$RLOG.lock" 2>/dev/null | grep -c 'srv/state/standby/latest') $(cat "$RLOG.lock" 2>/dev/null | grep -c 'brain/raw/chats') $(grep -c 'peer.example:/srv/brain/raw/chats/' "$RLOG")"
 eq "standby-sync: no lock left" 0 "$([ -d "$S/standby/.lock" ] && echo 1 || echo 0)"
 out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1)"
@@ -190,7 +199,7 @@ setenv; setrole primary; rm -rf "$BR/raw/chats"; mkdir -p "$BR/raw/chats"; git -
 mkdir -p "$S/gates"; printf 'echo "test gate"\nexit 10\n' > "$S/gates/brain-ingest"
 out="$(bash "$TMP/scripts/brain-ingest.sh" --swarm personal run 2>&1; echo "rc=$?")"
 eq "brain-ingest: exit 0" 1 "$(printf '%s\n' "$out" | grep -c '^rc=0$')"
-eq "brain-ingest: collected, then gated" "collected gated" "$(printf '%s\n' "$out" | sed -n 's/.*\(collected\) 6 chat files.*/\1/p; s/.*\(gated\): test gate.*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
+eq "brain-ingest: collected, then gated" "collected gated" "$(printf '%s\n' "$out" | sed -n 's/.*\(collected\) 8 chat files.*/\1/p; s/.*\(gated\): test gate.*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
 eq "brain-ingest: the chats arrived" "$WANT" "$(tree "$BR/raw/chats")"
 out="$(RSYNC_FAIL=1 bash "$TMP/scripts/brain-ingest.sh" --swarm personal run 2>&1; echo "rc=$?")"
 eq "brain-ingest: a failed collection never fails the run" "1 1" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(printf '%s\n' "$out" | grep -c 'gated: test gate')"

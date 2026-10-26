@@ -477,7 +477,8 @@ def digest_gemini(path, slug):
 # --- the collector's list (brain-collect.sh) ------------------------------------------------------
 # Run on the host that has the chats, before anything is copied: work material (BRAIN_EXCLUDE) and
 # chats from temp folders (our own consults and scratch runs) never leave it. A chat is kept only
-# when every folder it names passes; the digest pass checks again on the brain's host.
+# when no folder or title it names is excluded and it did not start in a temp folder (a session that
+# later visits a scratchpad is still the owner's); the digest pass checks again on the brain's host.
 TEMP_ROOTS = ("/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp", "/var/folders", "/private/var/folders")
 _SCRATCH = re.compile(r"(?:^|/)claude-\d+(?:/|$)")          # a Claude scratchpad, /private/tmp/claude-<uid>
 _SCRATCH_FOLDER = re.compile(r"(?:^|-)claude-\d+(?:-|$)")   # the same in a project folder name
@@ -495,13 +496,25 @@ def temp_folder(name):
         or bool(_SCRATCH_FOLDER.search(name))
 
 
+def folder_excluded(rx, cwd):
+    return bool(rx.search(cwd) or rx.search(folder_of(cwd)))
+
+
 def folder_blocked(rx, cwd):
-    return bool(rx.search(cwd) or rx.search(folder_of(cwd)) or temp_path(cwd))
+    return folder_excluded(rx, cwd) or temp_path(cwd)
+
+
+def _ls(d):
+    try:
+        return sorted(os.listdir(d))
+    except OSError:
+        return []
 
 
 def chat_fields(path):
-    """Every cwd and Claude Code title a chat file names (one read, no full parse): (cwds, titles)."""
-    cwds, titles = set(), set()
+    """Every cwd and Claude Code title a chat file names (one read, no full parse): (first cwd, cwds,
+    titles), or None when it cannot be read."""
+    first, cwds, titles = None, set(), set()
     try:
         with open(path, "rb") as f:
             data = f.read()
@@ -512,27 +525,33 @@ def chat_fields(path):
             v = json.loads(b'"' + m.group(2) + b'"')
         except ValueError:
             v = m.group(2).decode("utf-8", "replace")
-        (cwds if m.group(1) == b"cwd" else titles).add(v)
-    return cwds, titles
+        if m.group(1) == b"cwd":
+            first = first if first is not None else v
+            cwds.add(v)
+        else:
+            titles.add(v)
+    return first, cwds, titles
 
 
 def chat_ok(rx, path):
+    """No cwd or title in the file excluded, and its first cwd not a temp root."""
     f = chat_fields(path)
     if f is None:
         return False
-    cwds, titles = f
-    return not any(folder_blocked(rx, c) for c in cwds if c) and not any(rx.search(t) for t in titles if t)
+    first, cwds, titles = f
+    return not (first and temp_path(first)) and not any(folder_excluded(rx, c) for c in cwds if c) \
+        and not any(rx.search(t) for t in titles if t)
 
 
 def collect_claude(rx, top):
     """(dest under raw/chats/claude-code/<host>/, source) for what cc_chats reads: <project>/<session>.jsonl
     and <project>/<session>/subagents/*.jsonl; never memory/ or tool-results/. A project folder whose
-    name is excluded or a temp root goes whole; a session whose cwd or title is, with its subagents."""
-    for proj in sorted(os.listdir(top)):
+    name is excluded or a temp root goes whole; a session that chat_ok refuses goes with its subagents."""
+    for proj in _ls(top):
         pd = os.path.join(top, proj)
         if not os.path.isdir(pd) or rx.search(proj) or temp_folder(proj):
             continue
-        for fn in sorted(os.listdir(pd)):
+        for fn in _ls(pd):
             p = os.path.join(pd, fn)
             if fn.endswith(".jsonl") and os.path.isfile(p):
                 if chat_ok(rx, p):
@@ -542,7 +561,7 @@ def collect_claude(rx, top):
                 if os.path.isfile(parent) and not chat_ok(rx, parent):
                     continue
                 sd = os.path.join(p, "subagents")
-                for sub in sorted(os.listdir(sd)):
+                for sub in _ls(sd):
                     sp = os.path.join(sd, sub)
                     if sub.endswith(".jsonl") and os.path.isfile(sp) and chat_ok(rx, sp):
                         yield "%s/%s/subagents/%s" % (proj, fn, sub), sp
@@ -568,7 +587,7 @@ def codex_meta(path):
 
 def collect_codex(rx, top):
     """(dest under raw/chats/codex/<host>/, source) per rollout: one with a session_meta cwd, not a
-    consult of ours (originator codex_exec), and no cwd anywhere in it excluded or a temp root."""
+    consult of ours (originator codex_exec), that cwd not a temp root, and no cwd in it excluded."""
     for root, dirs, files in os.walk(top):
         dirs.sort()
         for fn in sorted(files):
@@ -588,7 +607,7 @@ def collect_gemini(rx, top):
     """(dest under raw/chats/gemini/<host>/, source) per slug: <slug>/.project_root and its
     chats/session-*.jsonl, flattened to <slug>/. A slug with no .project_root has no folder to check
     and is left out, as is one whose name or folder is excluded or a temp root."""
-    for slug in sorted(os.listdir(top)):
+    for slug in _ls(top):
         d = os.path.join(top, slug)
         rp = os.path.join(d, ".project_root")
         try:
@@ -599,7 +618,7 @@ def collect_gemini(rx, top):
         if not root or rx.search(slug) or folder_blocked(rx, root):
             continue
         cd = os.path.join(d, "chats")
-        sessions = sorted(fn for fn in (os.listdir(cd) if os.path.isdir(cd) else [])
+        sessions = sorted(fn for fn in _ls(cd)
                           if fn.startswith("session-") and fn.endswith(".jsonl") and os.path.isfile(os.path.join(cd, fn)))
         if not sessions:
             continue
