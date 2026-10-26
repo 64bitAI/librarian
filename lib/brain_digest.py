@@ -174,6 +174,20 @@ def excluded(rx, text, *extra):
     return any(rx.search(f) for f in list(extra) + header_fields(text) if f)
 
 
+def agent_type(path):
+    """The agentType a Claude Code subagent transcript (<session>/subagents/agent-*.jsonl) records in
+    its sibling agent-*.meta.json ("wrk:wrk-voice", "food:food"); "" when there is none or it cannot
+    be read. A subagent of an excluded type is excluded whatever its parent's folder."""
+    if not path.endswith(".jsonl"):
+        return ""
+    try:
+        with open(path[:-6] + ".meta.json", encoding="utf-8", errors="replace") as f:
+            v = json.load(f).get("agentType")
+    except (OSError, ValueError, AttributeError):
+        return ""
+    return v if isinstance(v, str) else ""
+
+
 def drop_digest(brain, index, rel):
     """A digest that is now excluded goes, file and index entry, so it is never queued."""
     if rel in index:
@@ -545,8 +559,9 @@ def chat_ok(rx, path):
 
 def collect_claude(rx, top):
     """(dest under raw/chats/claude-code/<host>/, source) for what cc_chats reads: <project>/<session>.jsonl
-    and <project>/<session>/subagents/*.jsonl; never memory/ or tool-results/. A project folder whose
-    name is excluded or a temp root goes whole; a session that chat_ok refuses goes with its subagents."""
+    and <project>/<session>/subagents/*.jsonl (with its agent-*.meta.json); never memory/ or tool-results/.
+    A project folder whose name is excluded or a temp root goes whole; a session that chat_ok refuses
+    goes with its subagents; a subagent whose agentType (agent_type) is excluded stays here."""
     for proj in _ls(top):
         pd = os.path.join(top, proj)
         if not os.path.isdir(pd) or rx.search(proj) or temp_folder(proj):
@@ -564,7 +579,14 @@ def collect_claude(rx, top):
                 for sub in _ls(sd):
                     sp = os.path.join(sd, sub)
                     if sub.endswith(".jsonl") and os.path.isfile(sp) and chat_ok(rx, sp):
+                        at = agent_type(sp)
+                        if at and rx.search(at):
+                            continue
                         yield "%s/%s/subagents/%s" % (proj, fn, sub), sp
+                        # The meta travels with it, so the digest pass can check the type again.
+                        mp = sp[:-6] + ".meta.json"
+                        if os.path.isfile(mp):
+                            yield "%s/%s/subagents/%s" % (proj, fn, sub[:-6] + ".meta.json"), mp
 
 
 def codex_meta(path):
@@ -835,6 +857,9 @@ def cmd_digest(brain):
     # too: every indexed digest is checked again on each pass.
     for rel in sorted(index):
         extra = path_fields(rel)
+        source = index[rel].get("source") if isinstance(index[rel], dict) else None
+        if isinstance(source, str):
+            extra = list(extra) + [agent_type(os.path.join(brain, source))]
         try:
             with open(os.path.join(brain, rel), encoding="utf-8", errors="replace") as f:
                 head = f.read(4000)
@@ -866,7 +891,7 @@ def cmd_digest(brain):
             drop_digest(brain, index, rel)
             done[key] = sig
             continue
-        if excluded(rx, text, host, project):
+        if excluded(rx, text, host, project, agent_type(p) if kind == "subagent" else ""):
             stats["excluded"] += 1
             drop_digest(brain, index, rel)
             done[key] = sig

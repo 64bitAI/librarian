@@ -22,8 +22,9 @@ The brain is a private git repo of plain Markdown, kept by an LLM in the pattern
 A collector (`scripts/brain-collect.sh`) copies each host's Claude Code, Codex and Gemini chats
 into the brain's git-ignored `raw/chats/`: the primary into its own clone before the ingest, the
 standby over the pair's ssh at most hourly. The list of files is made on the host that has them
-(`brain_digest.py collect-list`), so work sessions (`BRAIN_EXCLUDE`), temp folders, our own Codex
-consults and Gemini sessions with no recorded folder never leave it.
+(`brain_digest.py collect-list`), so work sessions (`BRAIN_EXCLUDE`), temp folders (`/tmp`,
+`/private/tmp`, `/var/tmp`, `/private/var/tmp`, `/var/folders`, `/private/var/folders`, and any
+path with a Claude scratchpad `claude-<uid>`), our own Codex consults and Gemini sessions with no recorded folder never leave it.
 
 A nightly ingest (`scripts/brain-ingest.sh` in this repo, on the swarm's primary) keeps it current
 in two stages. Stage A turns new raw chats into masked digests and then into short condensed notes.
@@ -76,7 +77,8 @@ until it is used.
 The "brain" skill for Codex and Gemini is built: `infra/agents-skills/brain/SKILL.md.tmpl`, which
 `scripts/engines.sh render` writes to `~/.agents/skills/brain/SKILL.md` with the swarm's
 `SWARM_BRAIN_DIR` (a hand-written file there is left alone; the managed line in it lets render
-replace it). It tells Gemini to add the brain with `--include-directories`, as its file tools
+replace it). `~/.agents/skills` is host-wide (every swarm's engines keep HOME), so only the first
+(personal) swarm's render writes it. It tells Gemini to add the brain with `--include-directories`, as its file tools
 refuse paths outside the workspace. A brain clone on a standby machine is fast-forwarded by
 `standby-sync.sh` (clean clones only). The skill says:
 
@@ -149,7 +151,13 @@ What is Claude-specific today:
 - Raw chats are git-ignored and leave the machine they were made on only after the filter there:
   work folders and titles (`BRAIN_EXCLUDE`), temp folders and scratchpads, our own headless Codex
   consults and Gemini sessions with no recorded folder are dropped before anything is copied, so
-  work material never leaves the work machine. What arrives is kept as it came (nothing is deleted
+  work material never leaves the work machine. `BRAIN_EXCLUDE` is matched against a Claude Code
+  subagent's agent type too (the `agentType` in its `agent-*.meta.json`, such as `wrk:wrk-voice`),
+  so an excluded subagent run from a personal project stays behind, and the digest pass checks the
+  type again; extending `BRAIN_EXCLUDE` with `|therapy|legal` in a host's `.env` keeps those
+  agents' runs out the same way. A subagent with no readable meta is judged on its folder and title
+  as before. What stays a residual: text the parent session quotes back from an excluded subagent
+  (its tool result) travels with the parent, as an excluded path the parent names only in passing does. What arrives is kept as it came (nothing is deleted
   at the brain) and goes into the swarm's encrypted backup set as `brain-chats.tgz`, since the
   brain's git bundle never holds it. Digests, condensed notes and job state are git-ignored too.
 - The merging model sees only the night's notes and the wiki, never `raw/` (owner notes from

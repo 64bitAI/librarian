@@ -10,7 +10,8 @@
 #   primary  copies into its own brain (this swarm's SWARM_BRAIN_DIR)
 #   standby  pushes to the primary over the pair ssh, into the brain directory the primary names
 #            (stack-role.sh brain); an unreachable or old-code primary is one log line, exit 0
-# Only a swarm whose .env sets SWARM_BRAIN_DIR collects (another swarm's Claude home never travels).
+# Only a swarm whose .env sets SWARM_BRAIN_DIR collects (another swarm's Claude home never travels);
+# the brain and the Claude config come from that .env, never from the calling session's environment.
 # Never prints a chat's contents: counts and paths of directories only.
 #   scripts/brain-collect.sh [run]   collect now (brain-ingest.sh run, before its gate)
 #   scripts/brain-collect.sh hourly  the same, unless the last collection was under an hour ago
@@ -43,7 +44,7 @@ trap 'rm -rf "$LINKS" "$LIST" "$LOCK"' EXIT
 
 role="$(role_get role)"
 case "$role" in
-  primary) dest="$(_abs_path SWARM_BRAIN_DIR "$(envget SWARM_BRAIN_DIR)")" || exit 0 ;;
+  primary) dest="$(_abs_path SWARM_BRAIN_DIR "$(envfile_get SWARM_BRAIN_DIR)")" || exit 0 ;;
   standby)
     t="$(envget SWARM_PAIR_SSH)"
     [ -n "$t" ] || { log "brain collect: standby with no SWARM_PAIR_SSH; nothing to push to"; exit 0; }
@@ -58,19 +59,24 @@ case "$role" in
 esac
 
 export BRAIN_EXCLUDE; BRAIN_EXCLUDE="$(envget BRAIN_EXCLUDE)"
+# The swarm's own Claude config (its .env, else ~/.claude), never one exported by the session that
+# runs this: a work session's SWARM_CLAUDE_CONFIG must not send its chats.
+cc="$( unset SWARM_CLAUDE_CONFIG; claude_config_dir )" && [ -n "$cc" ] || { log "brain collect: no Claude config directory for this swarm; nothing collected"; exit 0; }
 python3 "$ROOT/scripts/brain_digest.py" collect-list "$(envget SWARM_MACHINE "$(hostname -s)")" "$LINKS" \
-  "$(claude_config_dir)/projects" "$(engine_home codex)/sessions" "$(engine_home gemini)/.gemini/tmp" > "$LIST"
+  "$cc/projects" "$(engine_home codex)/sessions" "$(engine_home gemini)/.gemini/tmp" > "$LIST"
 n="$(wc -l < "$LIST" | tr -d ' ')"
 [ "$n" -gt 0 ] || { log "brain collect: no chats to copy"; date +%s > "$STAMP"; exit 0; }
 
 # --copy-links: the links dir holds one per listed file at its brain path; the file itself is sent.
+# A push to the primary stops after 300 s without I/O (and the pair ssh's keepalives end a dead
+# session), so a stalled push never freezes the standby.
 if [ "$role" = primary ]; then
   mkdir -p "$dest/raw/chats"
   if rsync -aL --files-from="$LIST" "$LINKS/" "$dest/raw/chats/" 2>/dev/null; then
     log "brain collect: collected $n chat files into the brain"
   else log "brain collect: could not copy chats into $dest/raw/chats"; exit 0; fi
 else
-  if rsync -aL -e "$(swarm_rsync_rsh)" --files-from="$LIST" "$LINKS/" "$t:$dest/raw/chats/" 2>/dev/null; then
+  if rsync -aL --timeout=300 -e "$(swarm_rsync_rsh)" --files-from="$LIST" "$LINKS/" "$t:$dest/raw/chats/" 2>/dev/null; then
     log "brain collect: copied $n chat files to the primary ($t)"
   else log "brain collect: could not copy chats to the primary ($t)"; exit 0; fi
 fi

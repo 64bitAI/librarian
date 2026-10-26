@@ -40,6 +40,7 @@ case "$c" in
   *"stack-role.sh identity"*) exit 0 ;;
   *"stack-role.sh brain"*) [ -z "${PEER_OLD:-}" ] || { echo "usage: stack-role.sh ..." >&2; exit 2; }; echo "${PEER_BRAIN:-/srv/brain}" ;;
   *"stack-role.sh dir"*) echo /srv/state ;;
+  *git-upload-pack*) [ -z "${SSH_HANG:-}" ] || sleep 20; exit 128 ;;
   *) exit 0 ;;
 esac
 SH
@@ -124,6 +125,25 @@ eq "collect-list: BRAIN_EXCLUDE replaces the default" "$({ printf '%s\n' "$WANT"
   echo claude-code/host1/-Users-o-src-employerco-app/w1.jsonl; } | LC_ALL=C sort)" "$L2"
 eq "collect-list: missing sources are skipped" "" "$(python3 "$TMP/scripts/brain_digest.py" collect-list host1 "" "$TMP/none" "" "$TMP/none2")"
 
+# A subagent's type (its sibling agent-*.meta.json agentType) is matched too: an wrk subagent run from
+# a personal project stays here; therapy and legal stay when BRAIN_EXCLUDE names them; food travels
+# with its meta (the digest pass checks the type again). A subagent with no meta is kept as before.
+SA="$HOME/.claude/projects/-Users-o-src-personal/s1/subagents"
+for a in v:wrk:wrk-voice t:therapy:therapy l:legal:legal f:food:food; do
+  cp "$SA/agent-a.jsonl" "$SA/agent-${a%%:*}.jsonl"; printf '{"agentType":"%s","description":"x"}\n' "${a#*:}" > "$SA/agent-${a%%:*}.meta.json"
+done
+L="$(python3 "$TMP/scripts/brain_digest.py" collect-list host1 "" "$HOME/.claude/projects" "" "" | grep /subagents/ | LC_ALL=C sort | tr '\n' ' ')"
+eq "collect-list: an wrk subagent stays, others travel with their meta" "$(printf '%s ' \
+  claude-code/host1/-Users-o-src-personal/s1/subagents/agent-a.jsonl \
+  claude-code/host1/-Users-o-src-personal/s1/subagents/agent-f.jsonl claude-code/host1/-Users-o-src-personal/s1/subagents/agent-f.meta.json \
+  claude-code/host1/-Users-o-src-personal/s1/subagents/agent-l.jsonl claude-code/host1/-Users-o-src-personal/s1/subagents/agent-l.meta.json \
+  claude-code/host1/-Users-o-src-personal/s1/subagents/agent-t.jsonl claude-code/host1/-Users-o-src-personal/s1/subagents/agent-t.meta.json)" "$L"
+L="$(BRAIN_EXCLUDE='employerco|(?<![a-z0-9])wrk(?![a-z0-9])|gitea|therapy|legal' python3 "$TMP/scripts/brain_digest.py" collect-list host1 "" "$HOME/.claude/projects" "" "" | grep /subagents/ | sed 's|.*/||' | LC_ALL=C sort | tr '\n' ' ')"
+eq "collect-list: BRAIN_EXCLUDE with therapy|legal keeps those subagents here; food still travels" "agent-a.jsonl agent-f.jsonl agent-f.meta.json " "$L"
+printf 'not json' > "$SA/agent-f.meta.json"
+eq "collect-list: an unreadable meta keeps the subagent" 1 "$(python3 "$TMP/scripts/brain_digest.py" collect-list host1 "" "$HOME/.claude/projects" "" "" | grep -c '/agent-f.jsonl$')"
+rm -f "$SA"/agent-[vtlf].*
+
 # --- the primary: a local copy into its own brain --------------------------------------------------
 setenv; setrole primary
 out="$(run run)"
@@ -142,6 +162,16 @@ eq "no stage left behind" "" "$(ls -A "$TMPDIR")"
 echo keep > "$BR/raw/chats/claude-code/host1/-Users-o-src-personal/gone.jsonl"
 run run >/dev/null; eq "primary: a chat gone at the source stays in the brain" 1 "$([ -f "$BR/raw/chats/claude-code/host1/-Users-o-src-personal/gone.jsonl" ] && echo 1 || echo 0)"
 
+# The swarm's own Claude config, never one the calling session exported (a work session's).
+mkdir -p "$HOME/.claude-work/projects/-Users-o-src-workonly"
+cp "$HOME/.claude/projects/-Users-o-src-personal/s1.jsonl" "$HOME/.claude-work/projects/-Users-o-src-workonly/wk.jsonl"
+out="$(SWARM_CLAUDE_CONFIG="$HOME/.claude-work" run run)"
+eq "an exported SWARM_CLAUDE_CONFIG is ignored: none of its chats listed" "0 1" "$(grep -c workonly "$RLOG.list") $(printf '%s\n' "$out" | grep -c 'collected 8 chat files')"
+# The brain is this swarm's .env SWARM_BRAIN_DIR, never one exported by the calling session.
+OTHER="$TMP/other-brain"; mkdir -p "$OTHER"
+out="$(SWARM_BRAIN_DIR="$OTHER" run run)"
+eq "primary: an exported SWARM_BRAIN_DIR is ignored" "1 0" "$(printf '%s\n' "$out" | grep -c 'collected 8 chat files') $(find "$OTHER" -type f | wc -l | tr -d ' ')"
+
 # --- the hourly stamp ------------------------------------------------------------------------------
 out="$(run hourly)"; eq "hourly: a second run within the hour does nothing" "1 0 0" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(wc -l < "$RLOG" | tr -d ' ') $(lines "$out")"
 echo $(( $(date +%s) - 4000 )) > "$S/.brain-collected"
@@ -159,6 +189,7 @@ eq "standby: pushes over the pair ssh to that brain" 1 "$(grep -c -- '-e ssh .*p
 eq "standby: exactly the listed files arrive" "$WANT" "$(tree "$REMOTE/srv/brain/raw/chats")"
 eq "standby: mtime kept" "$(mtime "$HOME/.claude/projects/-Users-o-src-personal/s1.jsonl")" "$(mtime "$REMOTE/srv/brain/raw/chats/claude-code/host1/-Users-o-src-personal/s1.jsonl")"
 eq "standby: never --delete" 0 "$(grep -c -- '--delete' "$RLOG")"
+eq "standby: the push has an I/O timeout, the ssh keepalives" "1 1" "$(grep -c -- '--timeout=300' "$RLOG") $(grep -c 'ServerAliveInterval=15 -o ServerAliveCountMax=4' "$RLOG")"
 eq "standby: nothing copied into its own brain" 0 "$(find "$BR/raw/chats" -newer "$S/.role" -type f | wc -l | tr -d ' ')"
 eq "standby: stamp written" 1 "$([ -s "$S/.brain-collected" ] && echo 1 || echo 0)"
 rm -f "$S/.brain-collected"
@@ -182,6 +213,9 @@ out="$(SWARM_BRAIN_DIR="$BR" run run)"; eq "no SWARM_BRAIN_DIR in the swarm's .e
 # --- stack-role.sh answers the brain directory ------------------------------------------------------
 setenv
 eq "stack-role.sh brain" "$BR" "$(bash "$TMP/scripts/stack-role.sh" --swarm personal brain 2>/dev/null | tail -1)"
+printf 'SWARM_MACHINE=host1\nSWARM_BRAIN_DIR=~/brainx/\n' > "$S/.env"
+eq "stack-role.sh brain: a ~ path comes back absolute" "$HOME/brainx" "$(bash "$TMP/scripts/stack-role.sh" --swarm personal brain 2>/dev/null | tail -1)"
+setenv
 
 # --- the hooks ---------------------------------------------------------------------------------------
 # standby-sync's standby pass: the collector runs after the pass lets go of its lock.
@@ -211,6 +245,13 @@ eq "standby-sync: a dirty brain clone is left, with a log line" "1 1 1" "$([ "$(
 git -C "$CL" checkout -q -- index.md; rm -rf "$UP"
 out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
 eq "standby-sync: a failed brain pull is logged and not fatal" "1 1" "$(printf '%s\n' "$out" | grep -c 'brain pull failed') $(printf '%s\n' "$out" | grep -c '^rc=0$')"
+# A brain remote that stops answering never holds the pass: the fetch is bounded (BRAIN_PULL_SECONDS).
+git -C "$CL" remote set-url origin hang.example:brain
+t0="$(date +%s)"
+out="$(SSH_HANG=1 BRAIN_PULL_SECONDS=1 bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
+eq "standby-sync: a stalled brain fetch is cut off, logged, not fatal" "1 1 1" "$(printf '%s\n' "$out" | grep -c 'brain pull timed out') $(printf '%s\n' "$out" | grep -c '^rc=0$') $([ $(( $(date +%s) - t0 )) -lt 10 ] && echo 1)"
+out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
+eq "standby-sync: a fetch that fails fast is a failed pull" "1 0 1" "$(printf '%s\n' "$out" | grep -c 'brain pull failed') $(printf '%s\n' "$out" | grep -c 'timed out') $(printf '%s\n' "$out" | grep -c '^rc=0$')"
 # brain-ingest run: the collector runs before the gate.
 setenv; setrole primary; rm -rf "$BR/raw/chats"; mkdir -p "$BR/raw/chats"; git -C "$BR" init -q
 mkdir -p "$S/gates"; printf 'echo "test gate"\nexit 10\n' > "$S/gates/brain-ingest"

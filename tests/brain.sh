@@ -828,4 +828,18 @@ grep -v '^SWARM_BRAIN_DIR=' "$SW/.env" > "$SW/.env.new" && mv "$SW/.env.new" "$S
 eq "no SWARM_BRAIN_DIR: refused" 1 "$(job run)"
 eq "... saying so" 1 "$(grep -c 'SWARM_BRAIN_DIR is not set' "$TMP/out")"
 
+# --- a subagent's type (its agent-*.meta.json agentType) is matched by the digest pass too ---------
+B3="$TMP/brain-types"; C3="$B3/raw/chats/claude-code/h1/-Users-o-src-personal"
+for a in v:wrk:wrk-voice t:therapy:therapy f:food:food n:-; do
+  mkdir -p "$C3/s-${a%%:*}/subagents"
+  printf '{"type":"user","isSidechain":true,"timestamp":"2026-10-01T11:00:00Z","cwd":"/Users/o/src/personal","message":{"role":"user","content":"TYPEMARK %s"}}\n' "${a%%:*}" > "$C3/s-${a%%:*}/subagents/agent-1.jsonl"
+  [ "${a#*:}" = - ] || printf '{"agentType":"%s"}\n' "${a#*:}" > "$C3/s-${a%%:*}/subagents/agent-1.meta.json"
+done
+D3="$B3/raw/digests/claude-code/h1/-Users-o-src-personal"
+dg() { find "$D3" -type f -name '*.md' 2>/dev/null | sed 's|.*/||' | LC_ALL=C sort | tr '\n' ' '; }
+python3 "$DIG" digest "$B3" >/dev/null
+eq "digest: an wrk subagent is never digested; food, therapy (default) and no meta are" "s-f-agent-1.md s-n-agent-1.md s-t-agent-1.md " "$(dg)"
+BRAIN_EXCLUDE='employerco|(?<![a-z0-9])wrk(?![a-z0-9])|gitea|therapy|legal' python3 "$DIG" digest "$B3" >/dev/null
+eq "digest: BRAIN_EXCLUDE with therapy|legal drops the therapy subagent's digest; food stays" "s-f-agent-1.md s-n-agent-1.md " "$(dg)"
+
 fails="$(nfails)"; [ "$fails" = 0 ] && echo "all ok" || { echo "$fails failed"; exit 1; }
