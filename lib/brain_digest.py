@@ -20,6 +20,10 @@
   brain_digest.py cost   BRAIN set-alerted
   brain_digest.py mask   < text           mask secrets on stdin (for tests)
   brain_digest.py scan   < text           exit 1 (printing a count only) if masking would change any line
+  brain_digest.py collect-list HOST STAGE CLAUDE_PROJECTS CODEX_SESSIONS GEMINI_TMP
+                                          the chats this host may copy to the brain, one path per line
+                                          relative to raw/chats/ (BRAIN_EXCLUDE and temp folders left
+                                          out); with STAGE (else ""), each is also linked there
 
 Digests are derived and gitignored: raw/digests/claude-code/<host>/<project>/<session>.md,
 raw/digests/claude-ai/<account>/<conversation>.md, raw/digests/codex/<host>/<rollout>.md and
@@ -468,6 +472,161 @@ def digest_gemini(path, slug):
         ("engine", "gemini"),
     ], turns, "Gemini")
     return text, first or "", last or "", n, None
+
+
+# --- the collector's list (brain-collect.sh) ------------------------------------------------------
+# Run on the host that has the chats, before anything is copied: work material (BRAIN_EXCLUDE) and
+# chats from temp folders (our own consults and scratch runs) never leave it. A chat is kept only
+# when every folder it names passes; the digest pass checks again on the brain's host.
+TEMP_ROOTS = ("/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp", "/var/folders", "/private/var/folders")
+_SCRATCH = re.compile(r"(?:^|/)claude-\d+(?:/|$)")          # a Claude scratchpad, /private/tmp/claude-<uid>
+_SCRATCH_FOLDER = re.compile(r"(?:^|-)claude-\d+(?:-|$)")   # the same in a project folder name
+_FIELD = re.compile(rb'"(cwd|aiTitle)"\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
+def temp_path(p):
+    p = os.path.normpath(p) if p else ""
+    return any(p == r or p.startswith(r + "/") for r in TEMP_ROOTS) or bool(_SCRATCH.search(p))
+
+
+def temp_folder(name):
+    """A Claude Code project folder (folder_of(cwd)) under a temp root."""
+    return any(name == folder_of(r) or name.startswith(folder_of(r) + "-") for r in TEMP_ROOTS) \
+        or bool(_SCRATCH_FOLDER.search(name))
+
+
+def folder_blocked(rx, cwd):
+    return bool(rx.search(cwd) or rx.search(folder_of(cwd)) or temp_path(cwd))
+
+
+def chat_fields(path):
+    """Every cwd and Claude Code title a chat file names (one read, no full parse): (cwds, titles)."""
+    cwds, titles = set(), set()
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
+    for m in _FIELD.finditer(data):
+        try:
+            v = json.loads(b'"' + m.group(2) + b'"')
+        except ValueError:
+            v = m.group(2).decode("utf-8", "replace")
+        (cwds if m.group(1) == b"cwd" else titles).add(v)
+    return cwds, titles
+
+
+def chat_ok(rx, path):
+    f = chat_fields(path)
+    if f is None:
+        return False
+    cwds, titles = f
+    return not any(folder_blocked(rx, c) for c in cwds if c) and not any(rx.search(t) for t in titles if t)
+
+
+def collect_claude(rx, top):
+    """(dest under raw/chats/claude-code/<host>/, source) for what cc_chats reads: <project>/<session>.jsonl
+    and <project>/<session>/subagents/*.jsonl; never memory/ or tool-results/. A project folder whose
+    name is excluded or a temp root goes whole; a session whose cwd or title is, with its subagents."""
+    for proj in sorted(os.listdir(top)):
+        pd = os.path.join(top, proj)
+        if not os.path.isdir(pd) or rx.search(proj) or temp_folder(proj):
+            continue
+        for fn in sorted(os.listdir(pd)):
+            p = os.path.join(pd, fn)
+            if fn.endswith(".jsonl") and os.path.isfile(p):
+                if chat_ok(rx, p):
+                    yield "%s/%s" % (proj, fn), p
+            elif os.path.isdir(os.path.join(p, "subagents")):
+                parent = p + ".jsonl"
+                if os.path.isfile(parent) and not chat_ok(rx, parent):
+                    continue
+                sd = os.path.join(p, "subagents")
+                for sub in sorted(os.listdir(sd)):
+                    sp = os.path.join(sd, sub)
+                    if sub.endswith(".jsonl") and os.path.isfile(sp) and chat_ok(rx, sp):
+                        yield "%s/%s/subagents/%s" % (proj, fn, sub), sp
+
+
+def codex_meta(path):
+    """The first session_meta payload of a rollout (the rollout's own; a fork repeats its parent's)."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i > 50:
+                    break
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict) and rec.get("type") == "session_meta" and isinstance(rec.get("payload"), dict):
+                    return rec["payload"]
+    except OSError:
+        pass
+    return None
+
+
+def collect_codex(rx, top):
+    """(dest under raw/chats/codex/<host>/, source) per rollout: one with a session_meta cwd, not a
+    consult of ours (originator codex_exec), and no cwd anywhere in it excluded or a temp root."""
+    for root, dirs, files in os.walk(top):
+        dirs.sort()
+        for fn in sorted(files):
+            if not (fn.startswith("rollout-") and fn.endswith(".jsonl")):
+                continue
+            p = os.path.join(root, fn)
+            meta = codex_meta(p)
+            if not meta or meta.get("originator") == "codex_exec":
+                continue
+            cwd = meta.get("cwd") if isinstance(meta.get("cwd"), str) else ""
+            if not cwd or folder_blocked(rx, cwd) or not chat_ok(rx, p):
+                continue
+            yield os.path.relpath(p, top).replace(os.sep, "/"), p
+
+
+def collect_gemini(rx, top):
+    """(dest under raw/chats/gemini/<host>/, source) per slug: <slug>/.project_root and its
+    chats/session-*.jsonl, flattened to <slug>/. A slug with no .project_root has no folder to check
+    and is left out, as is one whose name or folder is excluded or a temp root."""
+    for slug in sorted(os.listdir(top)):
+        d = os.path.join(top, slug)
+        rp = os.path.join(d, ".project_root")
+        try:
+            with open(rp, encoding="utf-8", errors="replace") as f:
+                root = f.read().strip()
+        except OSError:
+            continue
+        if not root or rx.search(slug) or folder_blocked(rx, root):
+            continue
+        cd = os.path.join(d, "chats")
+        sessions = sorted(fn for fn in (os.listdir(cd) if os.path.isdir(cd) else [])
+                          if fn.startswith("session-") and fn.endswith(".jsonl") and os.path.isfile(os.path.join(cd, fn)))
+        if not sessions:
+            continue
+        yield "%s/.project_root" % slug, rp
+        for fn in sessions:
+            yield "%s/%s" % (slug, fn), os.path.join(cd, fn)
+
+
+def cmd_collect_list(host, stage, claude, codex, gemini):
+    """Print the files to copy, relative to raw/chats/; with STAGE, also link each one there at that
+    path (the collector rsyncs the stage with --copy-links, so the source layout never matters)."""
+    if not host or "/" in host or host in (".", ".."):
+        sys.exit("collect-list: bad host name")
+    rx = excluder()
+    for src, top, walk in (("claude-code", claude, collect_claude), ("codex", codex, collect_codex),
+                           ("gemini", gemini, collect_gemini)):
+        if not top or not os.path.isdir(top):
+            continue
+        for rel, p in walk(rx, top):
+            dest = "%s/%s/%s" % (src, host, rel)
+            if stage:
+                link = os.path.join(stage, dest)
+                os.makedirs(os.path.dirname(link), exist_ok=True)
+                if os.path.lexists(link):
+                    os.remove(link)
+                os.symlink(os.path.abspath(p), link)
+            print(dest)
 
 
 # --- claude.ai exports ----------------------------------------------------------------------------
@@ -992,6 +1151,11 @@ def main(argv):
         if n:
             print("%d line(s) look like secrets" % n)
             sys.exit(1)
+        return
+    if op == "collect-list":
+        if len(argv) != 7:
+            sys.exit(__doc__)
+        cmd_collect_list(*argv[2:7])
         return
     if len(argv) < 3:
         sys.exit(__doc__)

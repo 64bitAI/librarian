@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # The brain's nightly ingest (SWARM_BRAIN_DIR, see README "The brain"), in two stages:
+#   first, this host's own chats are copied into raw/chats/ (scripts/brain-collect.sh; the standby
+#      pushes its own from standby-sync.sh); a failed copy is logged and the run goes on
 #   A. new raw chats become masked digests (brain_digest.py; work folders matching BRAIN_EXCLUDE get
 #      none), and each digest not yet ingested becomes a short condensed note (brain_condense.py,
 #      raw/notes-condensed/, gitignored): written by Claude (Sonnet, one turn, no tools, the digest on
@@ -135,6 +137,9 @@ esac
 
 need_brain
 if [ "$(role_get role)" != primary ]; then log "not the primary: the brain has one writer; nothing done"; exit 0; fi
+# This host's own chats first (the standby pushes its own, standby-sync.sh); a failed copy is logged
+# and the run goes on with what is there.
+"$ROOT/scripts/brain-collect.sh" run || log "brain collect failed; ingesting what is there"
 # The gate (gates/brain-ingest.sh, or the swarm's own): no new chat and no digest due starts no model.
 rc=0; run_gated brain-ingest "$BRAIN" || rc=$?
 if [ "$rc" = 10 ]; then log "gated: $GATE_REASON"; last_run "gated: $GATE_REASON"; exit 0; fi
