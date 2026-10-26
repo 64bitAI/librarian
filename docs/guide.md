@@ -79,7 +79,8 @@ refuse paths outside the workspace. A brain clone on a standby machine is fast-f
 - How: read `index.md` first, open only the pages it lists, cite page paths in the answer, and
   check `sources.md` for where underlying data lives.
 - How to add something: write one new file in `raw/notes/` (dated, plain words, no secrets or
-  health details), commit it alone and push; never touch `wiki/`, `index.md` or `log.md`.
+  health details), commit it alone and push; never touch `wiki/`, `index.md` or `log.md`. When the
+  sandbox cannot write to the brain or run git there, give the note text to the owner instead.
 
 Where each tool looks for skills (check your tool's current docs; these move):
 

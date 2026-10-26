@@ -201,7 +201,11 @@ printf 'x\n' > "$UP/index.md" && $G -C "$UP" commit -q -am two
 printf 'SWARM_MACHINE=host1\nSWARM_BRAIN_DIR=%s\n' "$CL" > "$S/.env"; setrole standby; rm -f "$S/.brain-collected"
 out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
 eq "standby-sync: a clean brain clone is fast-forwarded" "$(git -C "$UP" rev-parse HEAD) 1" "$(git -C "$CL" rev-parse HEAD) $(printf '%s\n' "$out" | grep -c '^rc=0$')"
-printf 'y\n' > "$UP/index.md" && $G -C "$UP" commit -q -am three; printf 'dirty\n' >> "$CL/index.md"
+printf 'y\n' > "$UP/index.md" && $G -C "$UP" commit -q -am three
+mkdir -p "$CL/raw/notes"; printf 'a note\n' > "$CL/raw/notes/n.md"
+out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
+eq "standby-sync: an untracked note does not block the pull" "$(git -C "$UP" rev-parse HEAD) 0" "$(git -C "$CL" rev-parse HEAD) $(printf '%s\n' "$out" | grep -c 'brain pull')"
+rm -f "$CL/raw/notes/n.md"; printf 'z\n' > "$UP/index.md" && $G -C "$UP" commit -q -am four; printf 'dirty\n' >> "$CL/index.md"
 out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
 eq "standby-sync: a dirty brain clone is left, with a log line" "1 1 1" "$([ "$(git -C "$CL" rev-parse HEAD)" != "$(git -C "$UP" rev-parse HEAD)" ] && echo 1) $(printf '%s\n' "$out" | grep -c 'brain pull skipped') $(printf '%s\n' "$out" | grep -c '^rc=0$')"
 git -C "$CL" checkout -q -- index.md; rm -rf "$UP"
