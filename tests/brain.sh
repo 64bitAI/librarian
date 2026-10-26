@@ -243,7 +243,11 @@ good = [
     ri("2026-10-20T10:00:01.000Z", "message", role="developer", content=[{"type": "input_text", "text": "DEVMARK"}]),
     ri("2026-10-20T10:00:01.000Z", "message", role="user", content=[{"type": "input_text", "text": "<environment_context>ENVMARK</environment_context> AGENTSMARK"}]),
     ri("2026-10-20T10:00:02.000Z", "message", role="user", content=[{"type": "input_text", "text": "CODEXOWNER use key " + secret}]),
-    ev("2026-10-20T10:00:02.000Z", "user_message", message="CODEXOWNER use key " + secret, images=[], local_images=[], text_elements=[]),
+    ev("2026-10-20T10:00:01.500Z", "user_message", message="# AGENTS.md instructions KINDMARK", kind="user_instructions"),
+    ev("2026-10-20T10:00:01.600Z", "user_message", message="<environment_context>ENVKINDMARK</environment_context>", kind="environment_context"),
+    ev("2026-10-20T10:00:01.700Z", "user_message", message="<user_instructions>UIMARK</user_instructions>"),
+    ev("2026-10-20T10:00:01.800Z", "user_message", message="  <environment_context>ENV2MARK</environment_context>"),
+    ev("2026-10-20T10:00:02.000Z", "user_message", message="CODEXOWNER use key " + secret, kind="plain", images=[], local_images=[], text_elements=[]),
     ev("2026-10-20T10:00:03.000Z", "agent_reasoning", text="REASONMARK"),
     ri("2026-10-20T10:00:03.000Z", "reasoning", summary=[{"type": "summary_text", "text": "REASONMARK"}]),
     ri("2026-10-20T10:00:04.000Z", "function_call", name="shell", arguments="{\"cmd\": \"TOOLARGMARK\"}", call_id="c1"),
@@ -294,6 +298,7 @@ CX="$ED/codex/h2/rollout-2026-10-20T10-00-00-aaaa.md"; GM="$ED/gemini/h2/gproj/s
 eq "codex: digest written" yes "$([ -f "$CX" ] && echo yes || echo no)"
 eq "codex: owner text from user_message" 1 "$(grep -c '^Owner: CODEXOWNER use key' "$CX")"
 eq "codex: injected context and developer text never appear" 0 "$(grep -c 'ENVMARK\|AGENTSMARK\|DEVMARK' "$CX")"
+eq "codex: user_message of another kind, or opening with injected context, never appears" 0 "$(grep -c 'KINDMARK\|ENVKINDMARK\|UIMARK\|ENV2MARK' "$CX")"
 eq "codex: instructions never copied" 0 "$(grep -c 'INSTRMARK\|BASEMARK' "$CX")"
 eq "codex: assistant text from agent_message, once" 1 "$(grep -c 'CODEXREPLY' "$CX")"
 eq "codex: consecutive replies make one paragraph" 1 "$(grep -c '^Codex: CODEXSECOND' "$CX")"

@@ -340,8 +340,9 @@ def folder_of(cwd):
 
 
 def digest_codex(path):
-    """(text, first, last, n, why): a Codex rollout. The owner's words are event_msg user_message only
-    (a response_item user message carries the injected environment and AGENTS.md context); the
+    """(text, first, last, n, why): a Codex rollout. The owner's words are event_msg user_message only,
+    of kind plain or none (a response_item user message, or a user_message of kind user_instructions or
+    environment_context, carries the injected environment and AGENTS.md context); the
     assistant's are event_msg agent_message; tools are counted, never their inputs or outputs; the
     session_meta instructions are never read. why is "codex_exec" for our own ask.sh consults and
     "no_cwd" when the rollout names no folder, and the text is then empty."""
@@ -364,6 +365,12 @@ def digest_codex(path):
             msg = p.get("message").strip() if isinstance(p.get("message"), str) else ""
             if t == "event_msg" and pt in ("user_message", "agent_message"):
                 if not msg:
+                    continue
+                # Older releases sent AGENTS.md and the environment as user_message too, with kind
+                # user_instructions or environment_context: only a plain (or unmarked) one is the
+                # owner's, and one opening with those tags is injected whatever its kind says.
+                if pt == "user_message" and (p.get("kind", "plain") != "plain"
+                                             or msg.startswith(("<environment_context", "<user_instructions"))):
                     continue
                 role, text, tools = "Owner" if pt == "user_message" else "Codex", msg, None
             elif t == "response_item" and pt in ("function_call", "custom_tool_call"):
