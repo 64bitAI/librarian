@@ -310,7 +310,8 @@ def condense_text(text, cfg, source="(stdin)", date="", where="", writer="local"
 # --- the brain ------------------------------------------------------------------------------------
 def note_rel(digest_rel):
     """raw/digests/claude-code/<host>/<project>/<s>.md -> raw/notes-condensed/<host>/<project>/<s>.md;
-    raw/digests/claude-ai/<account>/<c>.md -> raw/notes-condensed/claude-ai/<account>/<c>.md."""
+    raw/digests/claude-ai/<account>/<c>.md -> raw/notes-condensed/claude-ai/<account>/<c>.md; codex
+    and gemini keep their source folder the same way."""
     p = digest_rel.split("/")
     if p[:3] == ["raw", "digests", "claude-code"]:
         rest = p[3:]
@@ -323,7 +324,11 @@ def where_of(digest_rel):
     p = digest_rel.split("/")
     if p[:3] == ["raw", "digests", "claude-code"] and len(p) >= 6:
         return "host %s, project folder %s" % (p[3], p[4])
-    if len(p) >= 5:
+    if p[:3] == ["raw", "digests", "codex"] and len(p) >= 5:
+        return "Codex session on host %s" % p[3]
+    if p[:3] == ["raw", "digests", "gemini"] and len(p) >= 6:
+        return "Gemini session on host %s, project folder %s" % (p[3], p[4])
+    if p[:3] == ["raw", "digests", "claude-ai"] and len(p) >= 5:
         return "claude.ai account %s" % p[3]
     return ""
 

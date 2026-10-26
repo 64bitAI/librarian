@@ -21,8 +21,9 @@
   brain_digest.py mask   < text           mask secrets on stdin (for tests)
   brain_digest.py scan   < text           exit 1 (printing a count only) if masking would change any line
 
-Digests are derived and gitignored: raw/digests/claude-code/<host>/<project>/<session>.md and
-raw/digests/claude-ai/<account>/<conversation>.md. Owner notes (raw/notes/**/*.md, written by the
+Digests are derived and gitignored: raw/digests/claude-code/<host>/<project>/<session>.md,
+raw/digests/claude-ai/<account>/<conversation>.md, raw/digests/codex/<host>/<rollout>.md and
+raw/digests/gemini/<host>/<slug>/<session>.md. Owner notes (raw/notes/**/*.md, written by the
 owner or an agent and committed) are sources in their own right: never digested or condensed, queued
 while committed and unchanged in the work tree, and keyed by content hash in ingested.json like a
 digest, so an edited note comes back and an unchanged one does not. State lives in raw/.state/ (digested.json,
@@ -303,6 +304,165 @@ def digest_session(path, project, sidechain_ok):
     return "\n".join(head) + "\n\n" + "\n\n".join(body) + "\n", first or "", last or "", n_owner + n_claude
 
 
+# --- Codex and Gemini sessions --------------------------------------------------------------------
+def render(title, fields, turns, assistant):
+    """A digest in the Claude Code layout: the same header lines (cwd, project folder, first, last), so
+    header_fields, excluded() and cap(mask(...)) treat every source alike."""
+    n_owner = sum(1 for x in turns if x[0] == "Owner")
+    n_other = len(turns) - n_owner
+    head = ["# Session %s" % title] + ["- %s: %s" % (k, v) for k, v in fields if v]
+    head.append("- messages: %d owner, %d %s" % (n_owner, n_other, assistant))
+    body = []
+    for role, texts, tools in turns:
+        para = "\n\n".join(texts).strip()
+        if role != "Owner" and tools:
+            summary = "[tools: %s]" % ", ".join("%s x%d" % (k, v) for k, v in tools.most_common())
+            para = (para + "\n" + summary) if para else summary
+        if para:
+            body.append("%s: %s" % (role, para))
+    return "\n".join(head) + "\n\n" + "\n\n".join(body) + "\n", n_owner + n_other
+
+
+def add_turn(turns, role, text, tools=None):
+    """Consecutive assistant records (and their tool calls) make one paragraph, as in claude_parts."""
+    if role != "Owner" and turns and turns[-1][0] == role:
+        if text:
+            turns[-1][1].append(text)
+        turns[-1][2].update(tools or {})
+    else:
+        turns.append([role, [text] if text else [], Counter(tools or {})])
+
+
+def folder_of(cwd):
+    """Claude Code's project folder naming for a cwd (/a/b.c -> -a-b-c), so a work folder name matches
+    BRAIN_EXCLUDE the same way in either header line."""
+    return re.sub(r"[^A-Za-z0-9]", "-", cwd)
+
+
+def digest_codex(path):
+    """(text, first, last, n, why): a Codex rollout. The owner's words are event_msg user_message only
+    (a response_item user message carries the injected environment and AGENTS.md context); the
+    assistant's are event_msg agent_message; tools are counted, never their inputs or outputs; the
+    session_meta instructions are never read. why is "codex_exec" for our own ask.sh consults and
+    "no_cwd" when the rollout names no folder, and the text is then empty."""
+    meta = None
+    first = last = None
+    turns = []
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(rec, dict) or not isinstance(rec.get("payload"), dict):
+                continue
+            t, p = rec.get("type"), rec["payload"]
+            if t == "session_meta":
+                meta = meta or p  # a forked rollout repeats its parent's after its own: the first is this one
+                continue
+            pt = p.get("type")
+            msg = p.get("message").strip() if isinstance(p.get("message"), str) else ""
+            if t == "event_msg" and pt in ("user_message", "agent_message"):
+                if not msg:
+                    continue
+                role, text, tools = "Owner" if pt == "user_message" else "Codex", msg, None
+            elif t == "response_item" and pt in ("function_call", "custom_tool_call"):
+                role, text, tools = "Codex", "", {p.get("name") or "tool": 1}
+            elif t == "event_msg" and pt == "web_search_end":
+                role, text, tools = "Codex", "", {"web_search": 1}
+            else:
+                continue
+            ts = rec.get("timestamp")
+            if ts:
+                first = first or ts
+                last = ts
+            add_turn(turns, role, text, tools)
+    meta = meta or {}
+    if meta.get("originator") == "codex_exec":
+        return "", "", "", 0, "codex_exec"
+    if not any(x[0] == "Owner" for x in turns):
+        return "", "", "", 0, None
+    cwd = meta.get("cwd") if isinstance(meta.get("cwd"), str) else ""
+    if not cwd:
+        return "", "", "", 0, "no_cwd"
+    git = meta.get("git") if isinstance(meta.get("git"), dict) else {}
+    text, n = render(meta.get("id") or os.path.basename(path)[:-6], [
+        ("project folder", folder_of(cwd)), ("first", first or "unknown"), ("last", last or "unknown"),
+        ("cwd", cwd), ("git branch", git.get("branch")), ("engine", "codex (%s)" % (meta.get("originator") or "unknown")),
+    ], turns, "Codex")
+    return text, first or "", last or "", n, None
+
+
+def gemini_root(path):
+    """The folder a Gemini session ran in: .project_root beside the session (the brain's layout), or
+    beside its chats/ folder (Gemini's own). None when there is none."""
+    d = os.path.dirname(path)
+    for c in (d, os.path.dirname(d)) if os.path.basename(d) == "chats" else (d,):
+        try:
+            with open(os.path.join(c, ".project_root"), encoding="utf-8", errors="replace") as f:
+                root = f.read().strip()
+        except OSError:
+            continue
+        return root or None
+    return None
+
+
+def gemini_text(c):
+    if isinstance(c, str):
+        return c.strip()
+    if isinstance(c, list):
+        return "\n\n".join(b["text"].strip() for b in c if isinstance(b, dict) and isinstance(b.get("text"), str)
+                           and b["text"].strip())
+    return ""
+
+
+def digest_gemini(path, slug):
+    """(text, first, last, n, why): a Gemini CLI session. Messages of type user are the owner's and
+    gemini the assistant's (string or parts with text); thoughts and tool arguments and results are
+    never read, tool calls only counted; the header line, {"$set": ...} updates and info, error and
+    warning messages are skipped. With no .project_root the session has no cwd, so it gets no digest
+    (why "no_cwd"): a work chat must never dodge BRAIN_EXCLUDE."""
+    cwd = gemini_root(path)
+    if not cwd:
+        return "", "", "", 0, "no_cwd"
+    sid = first = last = None
+    turns = []
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(rec, dict):
+                continue
+            if "sessionId" in rec and "type" not in rec:
+                sid = sid or rec.get("sessionId")
+                continue
+            t = rec.get("type")
+            if t not in ("user", "gemini"):
+                continue
+            text = gemini_text(rec.get("content"))
+            tools = Counter()
+            if t == "gemini" and isinstance(rec.get("toolCalls"), list):
+                for c in rec["toolCalls"]:
+                    if isinstance(c, dict):
+                        tools[c.get("name") or "tool"] += 1
+            if not text and not tools:
+                continue
+            ts = rec.get("timestamp")
+            if ts:
+                first = first or ts
+                last = ts
+            add_turn(turns, "Owner" if t == "user" else "Gemini", text, tools)
+    if not any(x[0] == "Owner" for x in turns):
+        return "", "", "", 0, None
+    text, n = render(sid or os.path.basename(path)[:-6], [
+        ("project folder", slug), ("first", first or "unknown"), ("last", last or "unknown"), ("cwd", cwd),
+        ("engine", "gemini"),
+    ], turns, "Gemini")
+    return text, first or "", last or "", n, None
+
+
 # --- claude.ai exports ----------------------------------------------------------------------------
 def ai_message_text(msg):
     c = msg.get("content")
@@ -400,6 +560,66 @@ def cc_chats(brain):
                     yield p, host, project, "subagent", "%s/%s/%s-%s.md" % (host, project, parts[2], fn[:-6])
 
 
+def codex_chats(brain):
+    """The Codex rollouts a digest pass reads, in cc_chats' shape: (path, host, None, "codex", digest
+    path under raw/digests/codex/). Layout raw/chats/codex/<host>/YYYY/MM/DD/rollout-*.jsonl; the
+    digest drops the date folders (a rollout's name carries its time and id)."""
+    top = os.path.join(brain, "raw", "chats", "codex")
+    for root, dirs, files in os.walk(top):
+        dirs.sort()
+        for fn in sorted(files):
+            if not (fn.startswith("rollout-") and fn.endswith(".jsonl")):
+                continue
+            p = os.path.join(root, fn)
+            parts = os.path.relpath(p, top).split(os.sep)
+            if len(parts) < 2:
+                continue
+            yield p, parts[0], None, "codex", "%s/%s.md" % (parts[0], fn[:-6])
+
+
+def gemini_chats(brain):
+    """The Gemini sessions, in cc_chats' shape: (path, host, slug, "gemini", digest path under
+    raw/digests/gemini/). Layout raw/chats/gemini/<host>/<slug>/{session-*.jsonl,.project_root}."""
+    top = os.path.join(brain, "raw", "chats", "gemini")
+    for root, dirs, files in os.walk(top):
+        dirs.sort()
+        for fn in sorted(files):
+            if not (fn.startswith("session-") and fn.endswith(".jsonl")):
+                continue
+            p = os.path.join(root, fn)
+            parts = os.path.relpath(p, top).split(os.sep)
+            if len(parts) < 3:
+                continue
+            yield p, parts[0], parts[1], "gemini", "%s/%s/%s.md" % (parts[0], parts[1], fn[:-6])
+
+
+def chats(brain):
+    """Every session a digest pass reads, as (source, path, host, project, kind, out): Claude Code,
+    Codex and Gemini. The digest goes to raw/digests/<source>/<out>."""
+    for src, walk in (("claude-code", cc_chats), ("codex", codex_chats), ("gemini", gemini_chats)):
+        for row in walk(brain):
+            yield (src,) + row
+
+
+def chat_signature(p, kind):
+    """A Gemini session's signature takes in its .project_root, so one that arrives later (it decides
+    the cwd, and with it the exclusion) makes the session fresh again."""
+    sig = signature(p)
+    if kind == "gemini":
+        sig["root"] = sha(gemini_root(p) or "")[:16]
+    return sig
+
+
+def path_fields(rel):
+    """The folder names in a digest's path that exclusion also looks at: host and project folder for
+    Claude Code and Gemini, the account for claude.ai, the host for Codex. The cwd header decides
+    the rest."""
+    p = rel.split("/")
+    if p[:3] in (["raw", "digests", "claude-code"], ["raw", "digests", "gemini"]):
+        return p[3:5]
+    return p[3:4]
+
+
 def ai_exports(brain):
     """The claude.ai exports, as (path, account), oldest first: date folders sort that way, so a later
     export wins."""
@@ -414,7 +634,7 @@ def ai_exports(brain):
 def cmd_fresh(brain):
     """How many raw chats are new or changed since the last digest pass (read only; the ingest's gate)."""
     done = load(os.path.join(brain, "raw", ".state", "digested.json"), {})
-    n = sum(1 for p, _, _, kind, _ in cc_chats(brain) if kind and done.get(os.path.relpath(p, brain)) != signature(p))
+    n = sum(1 for _, p, _, _, kind, _ in chats(brain) if kind and done.get(os.path.relpath(p, brain)) != chat_signature(p, kind))
     n += sum(1 for p, _ in ai_exports(brain) if done.get(os.path.relpath(p, brain)) != signature(p))
     print(n)
 
@@ -429,8 +649,7 @@ def cmd_digest(brain):
     # Digests made before an exclusion applied (an older version, or a wider BRAIN_EXCLUDE now) go
     # too: every indexed digest is checked again on each pass.
     for rel in sorted(index):
-        p = rel.split("/")
-        extra = p[3:5] if p[:3] == ["raw", "digests", "claude-code"] else p[3:4]
+        extra = path_fields(rel)
         try:
             with open(os.path.join(brain, rel), encoding="utf-8", errors="replace") as f:
                 head = f.read(4000)
@@ -439,18 +658,27 @@ def cmd_digest(brain):
         if excluded(rx, head, *extra):
             stats["excluded"] += 1
             drop_digest(brain, index, rel)
-    for p, host, project, kind, out in cc_chats(brain):
+    for src, p, host, project, kind, out in chats(brain):
         if kind is None:
             stats["subagent_skipped"] += 1
             continue
-        key, sig = os.path.relpath(p, brain), signature(p)
+        key, sig = os.path.relpath(p, brain), chat_signature(p, kind)
         if done.get(key) == sig:
             stats["unchanged"] += 1
             continue
-        text, first, last, n = digest_session(p, project, kind == "subagent")
-        rel = os.path.join("raw", "digests", "claude-code", out)
-        if n == 0:
-            stats["empty"] += 1
+        why = None
+        if kind == "codex":
+            text, first, last, n, why = digest_codex(p)
+        elif kind == "gemini":
+            text, first, last, n, why = digest_gemini(p, project)
+        else:
+            text, first, last, n = digest_session(p, project, kind == "subagent")
+        rel = os.path.join("raw", "digests", src, out)
+        if why or n == 0:
+            # A consult of our own, a session with no folder or no owner message: no digest, and one
+            # made earlier goes.
+            stats[why or "empty"] += 1
+            drop_digest(brain, index, rel)
             done[key] = sig
             continue
         if excluded(rx, text, host, project):

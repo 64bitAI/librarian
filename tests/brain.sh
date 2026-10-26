@@ -220,6 +220,115 @@ out="$(python3 "$DIG" digest "$BR")"
 eq "second pass: nothing rewritten" 0 "$(printf '%s\n' "$out" | grep -c 'written_')"
 eq "BRAIN_EXCLUDE replaces the default" 1 "$(printf '# S\n- project folder: -x-gitea-y\n\nOwner: hi\n' > "$TMP/x.md"; BRAIN_EXCLUDE='nomatch' python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import brain_digest as b; print(0 if b.excluded(b.excluder(), open(sys.argv[2]).read()) else 1)' "$TMP/scripts" "$TMP/x.md")"
 
+# --- Codex and Gemini sessions (their own throwaway brain, so the job's counts below are unchanged) ----
+EB="$TMP/ebrain"; ED="$EB/raw/digests"
+python3 - "$EB" "$SECRET" <<'PY'
+import json, os, sys
+brain, secret = sys.argv[1], sys.argv[2]
+def w(path, recs):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        for r in recs: f.write(json.dumps(r) + "\n")
+def rec(t, ts, payload): return {"timestamp": ts, "type": t, "payload": payload}
+def meta(cwd, orig="codex_cli_rs", **k):
+    p = {"id": "cx-1", "timestamp": "2026-10-20T10:00:00.000Z", "cwd": cwd, "originator": orig, "cli_version": "0.1.0",
+         "source": "cli", "instructions": "INSTRMARK", "base_instructions": {"text": "BASEMARK"}}
+    p.update(k); return rec("session_meta", "2026-10-20T10:00:00.000Z", p)
+def ev(ts, t, **k): k["type"] = t; return rec("event_msg", ts, k)
+def ri(ts, t, **k): k["type"] = t; return rec("response_item", ts, k)
+cx = os.path.join(brain, "raw/chats/codex/h2/2026/10/20")
+good = [
+    meta("/home/o/src/github.com/example/project-beta", git={"branch": "feature-x", "commit_hash": "0" * 40, "repository_url": "x"}),
+    rec("turn_context", "2026-10-20T10:00:01.000Z", {"cwd": "/home/o/src/github.com/example/project-beta"}),
+    ri("2026-10-20T10:00:01.000Z", "message", role="developer", content=[{"type": "input_text", "text": "DEVMARK"}]),
+    ri("2026-10-20T10:00:01.000Z", "message", role="user", content=[{"type": "input_text", "text": "<environment_context>ENVMARK</environment_context> AGENTSMARK"}]),
+    ri("2026-10-20T10:00:02.000Z", "message", role="user", content=[{"type": "input_text", "text": "CODEXOWNER use key " + secret}]),
+    ev("2026-10-20T10:00:02.000Z", "user_message", message="CODEXOWNER use key " + secret, images=[], local_images=[], text_elements=[]),
+    ev("2026-10-20T10:00:03.000Z", "agent_reasoning", text="REASONMARK"),
+    ri("2026-10-20T10:00:03.000Z", "reasoning", summary=[{"type": "summary_text", "text": "REASONMARK"}]),
+    ri("2026-10-20T10:00:04.000Z", "function_call", name="shell", arguments="{\"cmd\": \"TOOLARGMARK\"}", call_id="c1"),
+    ri("2026-10-20T10:00:05.000Z", "function_call_output", call_id="c1", output="TOOLOUTMARK"),
+    ri("2026-10-20T10:00:06.000Z", "custom_tool_call", name="apply_patch", input="PATCHMARK", call_id="c2", status="completed"),
+    ri("2026-10-20T10:00:07.000Z", "custom_tool_call_output", call_id="c2", output="TOOLOUTMARK"),
+    ev("2026-10-20T10:00:08.000Z", "web_search_end", call_id="c3", query="QUERYMARK", action={}, results=[]),
+    ev("2026-10-20T10:00:09.000Z", "agent_message", message="CODEXREPLY done; token=abcd1234efgh5678", phase="final"),
+    ri("2026-10-20T10:00:09.000Z", "message", role="assistant", content=[{"type": "output_text", "text": "CODEXREPLY done"}]),
+    ev("2026-10-20T10:00:10.000Z", "token_count", info={}),
+    ev("2026-10-20T10:01:00.000Z", "user_message", message="thanks", images=[], local_images=[], text_elements=[]),
+    ev("2026-10-20T10:01:05.000Z", "agent_message", message="CODEXSECOND", phase="final"),
+    ev("2026-10-20T10:01:06.000Z", "agent_message", message="CODEXTHIRD", phase="final"),
+]
+w(os.path.join(cx, "rollout-2026-10-20T10-00-00-aaaa.jsonl"), good)
+w(os.path.join(cx, "rollout-2026-10-20T11-00-00-bbbb.jsonl"),   # our own ask.sh consult
+  [meta("/home/o/x", "codex_exec"), ev("2026-10-20T11:00:01.000Z", "user_message", message="EXECMARK"),
+   ev("2026-10-20T11:00:02.000Z", "agent_message", message="EXECMARK reply")])
+w(os.path.join(cx, "rollout-2026-10-20T12-00-00-cccc.jsonl"),   # work, by cwd
+  [meta("/home/o/src/wrk/thing"), ev("2026-10-20T12:00:01.000Z", "user_message", message="WORKMARK codex")])
+w(os.path.join(cx, "rollout-2026-10-20T13-00-00-dddd.jsonl"),   # an old rollout with no owner message
+  [meta("/"), ev("2026-10-20T13:00:01.000Z", "agent_message", message="NOOWNERMARK")])
+gm = os.path.join(brain, "raw/chats/gemini/h2")
+def gsess(slug, root, msgs):
+    d = os.path.join(gm, slug)
+    os.makedirs(d, exist_ok=True)
+    if root is not None:
+        open(os.path.join(d, ".project_root"), "w").write(root + "\n")
+    w(os.path.join(d, "session-2026-10-21T10-00-%s.jsonl" % slug),
+      [{"sessionId": "gs-" + slug, "projectHash": "f" * 64, "startTime": "2026-10-21T10:00:00.000Z",
+        "lastUpdated": "2026-10-21T10:05:00.000Z", "kind": "main"}] + msgs)
+gsess("gproj", "/home/o/src/github.com/example/gproj", [
+    {"id": "m1", "timestamp": "2026-10-21T10:00:01.000Z", "type": "user", "content": [{"text": "GEMOWNER use key " + secret}]},
+    {"$set": {"lastUpdated": "2026-10-21T10:00:02.000Z"}},
+    {"id": "m2", "timestamp": "2026-10-21T10:00:03.000Z", "type": "gemini", "content": "GEMREPLY one",
+     "thoughts": [{"subject": "s", "description": "GTHOUGHTMARK"}],
+     "toolCalls": [{"id": "t1", "name": "read_file", "args": {"p": "GTOOLARGMARK"}, "result": [{"text": "GTOOLOUTMARK"}]}]},
+    {"id": "m3", "timestamp": "2026-10-21T10:00:04.000Z", "type": "info", "content": "GINFOMARK"},
+    {"id": "m4", "timestamp": "2026-10-21T10:00:05.000Z", "type": "user", "content": "second ask"},
+    {"id": "m5", "timestamp": "2026-10-21T10:00:06.000Z", "type": "gemini", "content": [{"text": "GEMREPLY two"}]},
+])
+gsess("noroot", None, [{"id": "m1", "timestamp": "2026-10-21T11:00:00.000Z", "type": "user", "content": "NOROOTMARK"}])
+gsess("gwork", "/home/o/src/employerco/app", [{"id": "m1", "timestamp": "2026-10-21T12:00:00.000Z", "type": "user", "content": "WORKMARK gemini"}])
+PY
+eq "engines: fresh sees every new codex and gemini session" 7 "$(python3 "$DIG" fresh "$EB")"
+out="$(python3 "$DIG" digest "$EB")"
+CX="$ED/codex/h2/rollout-2026-10-20T10-00-00-aaaa.md"; GM="$ED/gemini/h2/gproj/session-2026-10-21T10-00-gproj.md"
+eq "codex: digest written" yes "$([ -f "$CX" ] && echo yes || echo no)"
+eq "codex: owner text from user_message" 1 "$(grep -c '^Owner: CODEXOWNER use key' "$CX")"
+eq "codex: injected context and developer text never appear" 0 "$(grep -c 'ENVMARK\|AGENTSMARK\|DEVMARK' "$CX")"
+eq "codex: instructions never copied" 0 "$(grep -c 'INSTRMARK\|BASEMARK' "$CX")"
+eq "codex: assistant text from agent_message, once" 1 "$(grep -c 'CODEXREPLY' "$CX")"
+eq "codex: consecutive replies make one paragraph" 1 "$(grep -c '^Codex: CODEXSECOND' "$CX")"
+eq "codex: one tools line" "[tools: shell x1, apply_patch x1, web_search x1]" "$(grep '^\[tools:' "$CX")"
+eq "codex: reasoning, tool inputs, outputs and queries skipped" 0 "$(grep -c 'REASONMARK\|TOOLARGMARK\|TOOLOUTMARK\|PATCHMARK\|QUERYMARK' "$CX")"
+eq "codex: the fake key and token= are masked" 0 "$(grep -c 'sk-ant-\|abcd1234efgh5678' "$CX")"
+eq "codex: header cwd, branch, times" 4 "$(grep -cE '^- (cwd: /home/o/src/github.com/example/project-beta|git branch: feature-x|first: 2026-10-20T10:00:02.000Z|last: 2026-10-20T10:01:06.000Z)$' "$CX")"
+eq "codex: header counts" 1 "$(grep -cx -- '- messages: 2 owner, 2 Codex' "$CX")"
+eq "codex: ask.sh consults (codex_exec) skipped" "0 1" "$(grep -rl EXECMARK "$ED" | wc -l | tr -d ' ') $(printf '%s\n' "$out" | sed -n 's/.*codex_exec=\([0-9]*\).*/\1/p')"
+eq "codex: no owner message, no digest" "0 1" "$(grep -rl NOOWNERMARK "$ED" | wc -l | tr -d ' ') $(printf '%s\n' "$out" | sed -n 's/.* empty=\([0-9]*\).*/\1/p')"
+eq "gemini: digest written" yes "$([ -f "$GM" ] && echo yes || echo no)"
+eq "gemini: owner and assistant text, string or parts" 4 "$(grep -cE '^(Owner: GEMOWNER|Gemini: GEMREPLY one|Owner: second ask|Gemini: GEMREPLY two)' "$GM")"
+eq "gemini: tools counted, thoughts, tool args and results and info skipped" "[tools: read_file x1] 0" "$(grep '^\[tools:' "$GM") $(grep -c 'GTHOUGHTMARK\|GTOOLARGMARK\|GTOOLOUTMARK\|GINFOMARK\|lastUpdated' "$GM")"
+eq "gemini: the fake key is masked" 0 "$(grep -c 'sk-ant-' "$GM")"
+eq "gemini: cwd from .project_root" 1 "$(grep -cx -- '- cwd: /home/o/src/github.com/example/gproj' "$GM")"
+eq "gemini: no .project_root, no digest, counted" "0 1" "$(grep -rl NOROOTMARK "$ED" | wc -l | tr -d ' ') $(printf '%s\n' "$out" | sed -n 's/.*no_cwd=\([0-9]*\).*/\1/p')"
+eq "engines: work excluded by cwd, codex and gemini" "0 2" "$(grep -rl WORKMARK "$ED" | wc -l | tr -d ' ') $(printf '%s\n' "$out" | sed -n 's/.*excluded=\([0-9]*\).*/\1/p')"
+eq "engines: written counts" "1 1" "$(printf '%s\n' "$out" | sed -n 's/.*written_codex=\([0-9]*\).*/\1/p') $(printf '%s\n' "$out" | sed -n 's/.*written_gemini=\([0-9]*\).*/\1/p')"
+eq "engines: the summary prints counts only" 0 "$(printf '%s\n' "$out" | grep -c 'CODEXOWNER\|GEMOWNER\|sk-')"
+eq "engines: digests are private" 600 "$(stat -c %a "$CX" 2>/dev/null || stat -f %Lp "$CX")"
+eq "engines: queued" 2 "$(python3 "$DIG" queue "$EB" 99999999 | grep -c 'digests/codex/\|digests/gemini/')"
+eq "engines: fresh sees nothing after the pass" 0 "$(python3 "$DIG" fresh "$EB")"
+out="$(python3 "$DIG" digest "$EB")"
+eq "engines: a rerun reports unchanged, writes nothing" "7 0" "$(printf '%s\n' "$out" | sed -n 's/.*unchanged=\([0-9]*\).*/\1/p') $(printf '%s\n' "$out" | grep -c 'written_')"
+printf '/home/o/src/github.com/example/rooted\n' > "$EB/raw/chats/gemini/h2/noroot/.project_root"
+eq "gemini: a .project_root arriving later makes the session fresh" 1 "$(python3 "$DIG" fresh "$EB")"
+eq "gemini: ... and digested then" 1 "$(python3 "$DIG" digest "$EB" | sed -n 's/.*written_gemini=\([0-9]*\).*/\1/p')"
+mkdir -p "$EB/raw/chats/codex/h2/2026/10/22"
+cp "$EB/raw/chats/codex/h2/2026/10/20/rollout-2026-10-20T10-00-00-aaaa.jsonl" "$EB/raw/chats/codex/h2/2026/10/22/rollout-2026-10-22T09-00-00-eeee.jsonl"
+eq "fresh: a new codex file counts" 1 "$(python3 "$DIG" fresh "$EB")"
+eq "engines: re-exclusion of indexed digests rests on their cwd" "0 0" "$(BRAIN_EXCLUDE='project-beta|gproj' python3 "$DIG" digest "$EB" >/dev/null; find "$ED/codex/h2" -type f | wc -l | tr -d ' ') $(grep -c 'gproj' "$EB/raw/.state/digests.json")"
+eq "where: codex" "Codex session on host h2" "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import brain_condense as c; print(c.where_of("raw/digests/codex/h2/rollout-x.md"))' "$TMP/scripts")"
+eq "where: gemini" "Gemini session on host h2, project folder gproj" "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import brain_condense as c; print(c.where_of("raw/digests/gemini/h2/gproj/session-x.md"))' "$TMP/scripts")"
+eq "where: claude.ai unchanged" "claude.ai account acct1" "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import brain_condense as c; print(c.where_of("raw/digests/claude-ai/acct1/c-1.md"))' "$TMP/scripts")"
+
 m() { printf '%s' "$1" | python3 "$DIG" mask; }
 eq "masking keeps paths and folder names" "-Users-o-src-github-com-example-x /a/b/c/AcmeCo42/d/e/f/g" "$(m '-Users-o-src-github-com-example-x /a/b/c/AcmeCo42/d/e/f/g')"
 eq "masking: provider keys" "[REDACTED] [REDACTED] [REDACTED] [REDACTED]" "$(m 'AKIAABCDEFGHIJKLMNOP ghp_abcdefghijklmnopqrstuvwxyz0123 xoxb-1234-5678-abcdefgh AIzaSyA1234567890abcdefghijklmnopqrstu')"
