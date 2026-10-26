@@ -67,8 +67,12 @@ frontmatter has at least `name` and `description`, followed by instructions. Age
 name and description up front and read the rest when a task matches, so a skill costs little
 until it is used.
 
-A small "brain" skill (not built yet as a standalone skill; today the same rule is one line in
-this repo's `skills/the host repo/SKILL.md`) would say:
+The "brain" skill for Codex and Gemini is built: `infra/agents-skills/brain/SKILL.md.tmpl`, which
+`scripts/engines.sh render` writes to `~/.agents/skills/brain/SKILL.md` with the swarm's
+`SWARM_BRAIN_DIR` (a hand-written file there is left alone; the managed line in it lets render
+replace it). It tells Gemini to add the brain with `--include-directories`, as its file tools
+refuse paths outside the workspace. A brain clone on a standby machine is fast-forwarded by
+`standby-sync.sh` (clean clones only). The skill says:
 
 - When to consult the brain: questions about the owner's people, projects, decisions, datasets or
   history, before guessing or asking.

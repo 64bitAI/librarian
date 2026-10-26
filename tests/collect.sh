@@ -194,6 +194,19 @@ eq "standby-sync: the pull held the sync lock, the collector did not" "1 0 1" "$
 eq "standby-sync: no lock left" 0 "$([ -d "$S/standby/.lock" ] && echo 1 || echo 0)"
 out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1)"
 eq "standby-sync: hourly, so the next pass does not push again" 0 "$(printf '%s\n' "$out" | grep -c 'chat files')"
+# standby-sync's standby pass also fast-forwards a clean brain clone here; a dirty one is left, a failure never fatal.
+UP="$TMP/brain-up"; CL="$TMP/brain-clone"; G="git -c user.name=t -c user.email=t@example.com"
+git init -q "$UP" && : > "$UP/index.md" && git -C "$UP" add . && $G -C "$UP" commit -q -m one && git clone -q "$UP" "$CL"
+printf 'x\n' > "$UP/index.md" && $G -C "$UP" commit -q -am two
+printf 'SWARM_MACHINE=host1\nSWARM_BRAIN_DIR=%s\n' "$CL" > "$S/.env"; setrole standby; rm -f "$S/.brain-collected"
+out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
+eq "standby-sync: a clean brain clone is fast-forwarded" "$(git -C "$UP" rev-parse HEAD) 1" "$(git -C "$CL" rev-parse HEAD) $(printf '%s\n' "$out" | grep -c '^rc=0$')"
+printf 'y\n' > "$UP/index.md" && $G -C "$UP" commit -q -am three; printf 'dirty\n' >> "$CL/index.md"
+out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
+eq "standby-sync: a dirty brain clone is left, with a log line" "1 1 1" "$([ "$(git -C "$CL" rev-parse HEAD)" != "$(git -C "$UP" rev-parse HEAD)" ] && echo 1) $(printf '%s\n' "$out" | grep -c 'brain pull skipped') $(printf '%s\n' "$out" | grep -c '^rc=0$')"
+git -C "$CL" checkout -q -- index.md; rm -rf "$UP"
+out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
+eq "standby-sync: a failed brain pull is logged and not fatal" "1 1" "$(printf '%s\n' "$out" | grep -c 'brain pull failed') $(printf '%s\n' "$out" | grep -c '^rc=0$')"
 # brain-ingest run: the collector runs before the gate.
 setenv; setrole primary; rm -rf "$BR/raw/chats"; mkdir -p "$BR/raw/chats"; git -C "$BR" init -q
 mkdir -p "$S/gates"; printf 'echo "test gate"\nexit 10\n' > "$S/gates/brain-ingest"
