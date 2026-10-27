@@ -252,6 +252,27 @@ out="$(SSH_HANG=1 BRAIN_PULL_SECONDS=1 bash "$TMP/scripts/standby-sync.sh" --swa
 eq "standby-sync: a stalled brain fetch is cut off, logged, not fatal" "1 1 1" "$(printf '%s\n' "$out" | grep -c 'brain pull timed out') $(printf '%s\n' "$out" | grep -c '^rc=0$') $([ $(( $(date +%s) - t0 )) -lt 10 ] && echo 1)"
 out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
 eq "standby-sync: a fetch that fails fast is a failed pull" "1 0 1" "$(printf '%s\n' "$out" | grep -c 'brain pull failed') $(printf '%s\n' "$out" | grep -c 'timed out') $(printf '%s\n' "$out" | grep -c '^rc=0$')"
+# standby-sync's standby pass exports the desktop's calendar and pushes it to the primary's <state>/calendar;
+# a deskkit failure is logged and never fails the pass.
+cat > "$TMP/bin/deskkit" <<'SH'
+#!/bin/sh
+if [ "$1" = caps ]; then echo '["calendar"]'; exit 0; fi
+[ -z "${DESK_FAIL:-}" ] || exit 2
+echo '{"events":[],"accounts_seen":["Personal"]}'
+SH
+chmod +x "$TMP/bin/deskkit"
+setenv SWARM_PAIR_SSH=peer.example "SWARM_DESKKIT=$TMP/bin/deskkit" SWARM_DESK_ACCOUNTS=Personal; setrole standby
+rm -rf "$REMOTE/srv/state/calendar"; mkdir -p "$REMOTE/srv/state"; : > "$RLOG"
+out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
+eq "standby-sync: the calendar snapshot reaches the primary's calendar directory" "1 1 1" \
+  "$([ -f "$REMOTE/srv/state/calendar/snapshot.json" ] && echo 1) $(grep -c 'peer.example:/srv/state/calendar/' "$RLOG") $(printf '%s\n' "$out" | grep -c '^rc=0$')"
+out="$(DESK_FAIL=1 bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
+eq "standby-sync: a failed calendar export is logged, not fatal" "1 1" \
+  "$(printf '%s\n' "$out" | grep -c 'calendar export failed') $(printf '%s\n' "$out" | grep -c '^rc=0$')"
+out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal status 2>&1)"
+eq "standby-sync status: the calendar snapshot's age" 1 "$(printf '%s\n' "$out" | grep -c '^calendar snapshot: [0-9]* min old, 0 events$')"
+rm -f "$TMP/bin/deskkit"
+
 # brain-ingest run: the collector runs before the gate.
 setenv; setrole primary; rm -rf "$BR/raw/chats"; mkdir -p "$BR/raw/chats"; git -C "$BR" init -q
 mkdir -p "$S/gates"; printf 'echo "test gate"\nexit 10\n' > "$S/gates/brain-ingest"
