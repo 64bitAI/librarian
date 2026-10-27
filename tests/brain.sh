@@ -68,6 +68,14 @@ case "${CLAUDE_MODE:-ok}" in
   strayownnew) echo x > notes/_raw-notes/extra.md; entry; ok 0.2 ;;
   noteedit) printf 'edited during the run\n' >> "$BR/raw/notes/sub/later.md"
     git -C "$BR" -c user.email=t@t -c user.name=t commit -qm "note: edit" -- raw/notes/sub/later.md; entry; ok 0.1 ;;
+  midpush) # a report pushed to origin from a second clone while the merge runs (stage B)
+    git -C "$SECOND" -c user.email=r@r -c user.name=r pull -q --rebase
+    printf '# Report\nmid-run report\n' > "$SECOND/raw/notes/midrun-report.md"
+    git -C "$SECOND" add raw/notes/midrun-report.md
+    git -C "$SECOND" -c user.email=r@r -c user.name=r commit -qm "report: mid-run"
+    git -C "$SECOND" push -q
+    mkdir -p wiki/topics; echo "# Mid (raw/notes/mid.md)" > wiki/topics/midpush.md
+    echo "- [Mid](wiki/topics/midpush.md): fixture" >> index.md; entry; ok 0.1 ;;
   term) kill -TERM "$(cat "$BR/raw/.state/ingest.lock/pid")"; entry; ok 0.05 ;;
 esac
 SH
@@ -822,6 +830,41 @@ eq "gate: then it shuts" 10 "$(bash "$TMP/gates/brain-ingest.sh" "$BR" >/dev/nul
 g remote set-url origin "$TMP/no-such-origin.git"
 eq "gate: an unreachable remote fails open to what it has" 10 "$(bash "$TMP/gates/brain-ingest.sh" "$BR" >/dev/null 2>&1; echo $?)"
 g remote set-url origin "$OR"
+
+# --- the pull and the pushes rebase: a report pushed from another clone is not lost ---------------------
+rm -f "$SW/gates/brain-ingest"; export BRAIN_PUSH_RETRY_SLEEP=0
+SECOND="$TMP/second"; export SECOND
+git clone -q -b main "$OR" "$SECOND"
+sg() { git -C "$SECOND" -c user.email=r@r -c user.name=r "$@"; }
+norebase() { [ ! -d "$BR/.git/rebase-merge" ] && [ ! -d "$BR/.git/rebase-apply" ] && echo 1 || echo 0; }
+# a pull whose rebase conflicts: aborted, never left mid-rebase, recorded and alerted as git-pull
+printf 'base\n' > "$BR/wiki/topics/conf.md"; g add wiki/topics/conf.md; g commit -qm "wiki: conf"; g push -q
+sg pull -q; printf 'theirs\n' > "$SECOND/wiki/topics/conf.md"; printf '# R\nx\n' > "$SECOND/raw/notes/conf-report.md"
+sg add wiki/topics/conf.md raw/notes/conf-report.md; sg commit -qm "report: conflicting"; sg push -q
+printf 'ours\n' > "$BR/wiki/topics/conf.md"; g commit -qm "wiki: conf ours" -- wiki/topics/conf.md
+rc="$(job run)"
+eq "rebase conflict: exit 1" 1 "$rc"
+eq "rebase conflict: no rebase left in progress" 1 "$(norebase)"
+eq "rebase conflict: recorded as failed git-pull" 1 "$(grep -c ' failed git-pull$' "$BR/raw/.state/last-run")"
+eq "rebase conflict: alerted with the class" 1 "$(tail -1 "$HELD" | grep -c '(git-pull)')"
+eq "rebase conflict: the tree is the local commit's, not conflicted" "ours" "$(cat "$BR/wiki/topics/conf.md")"
+eq "rebase conflict: claude never ran" 0 "$(calls)"
+g reset -q --hard origin/main
+# a report pushed during stage B: the cost push and the ingest push fail once, rebase, and land
+printf '# Seed\n- a note to ingest\n' > "$BR/raw/notes/midseed.md"; g add raw/notes/midseed.md; g commit -qm "note: seed"; g push -q
+echo 1 > "$BR/raw/.state/queue-chars"
+rc="$(CLAUDE_MODE=midpush job run)"
+eq "report mid-run: exit 0" 0 "$rc"
+eq "report mid-run: the run ended ok" 1 "$(grep -c ' ok [0-9]* notes ' "$BR/raw/.state/last-run")"
+subj="$(git -C "$OR" log --format=%s -n 4 main)"
+eq "report mid-run: the ingest commit is on origin, on top" 1 "$(printf '%s\n' "$subj" | head -1 | grep -c '^ingest: [0-9-]* [0-9]* notes$')"
+eq "report mid-run: the report commit is on origin, beneath it" 1 "$(printf '%s\n' "$subj" | grep -c '^report: mid-run$')"
+eq "report mid-run: origin has no merge commit" 0 "$(git -C "$OR" rev-list --merges main | wc -l | tr -d ' ')"
+eq "report mid-run: the checkout equals origin" "$(git -C "$OR" rev-parse main)" "$(g rev-parse HEAD)"
+eq "report mid-run: the report is in the checkout" 1 "$([ -f "$BR/raw/notes/midrun-report.md" ] && echo 1 || echo 0)"
+eq "report mid-run: no rebase in progress" 1 "$(norebase)"
+eq "report mid-run: no push-failed alert" 0 "$(grep -c 'push failed' "$HELD")"
+clean "report mid-run"
 
 # no brain configured
 grep -v '^SWARM_BRAIN_DIR=' "$SW/.env" > "$SW/.env.new" && mv "$SW/.env.new" "$SW/.env"

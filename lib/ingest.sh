@@ -45,7 +45,9 @@
 # brain_local_url in common.sh), BRAIN_LOCAL_MODEL (qwen2.5:14b-instruct), BRAIN_LOCAL_CHUNK_TOKENS
 # (12000), BRAIN_LOCAL_MAX_SECONDS (3600, then the rest waits for the next night), BRAIN_EXCLUDE (a
 # regular expression; default the employer's folders); stage B: BRAIN_INGEST_CHARS (120000
-# characters of notes), BRAIN_INGEST_MODEL (sonnet), BRAIN_INGEST_TURNS (60).
+# characters of notes), BRAIN_INGEST_MODEL (sonnet), BRAIN_INGEST_TURNS (60); git: the pull rebases and a failed push is
+# retried after a rebase (3 attempts, BRAIN_PUSH_RETRY_SLEEP seconds apart, default 2), so a note pushed
+# from another clone during the run is kept.
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 swarm_init "$@" || exit 1; set -- "${SWARM_ARGS[@]+"${SWARM_ARGS[@]}"}"
@@ -65,6 +67,7 @@ RUNMIN="$(envget BRAIN_RUN_MIN_USD 0.5)"
 MARGIN="$(envget BRAIN_RUN_MARGIN_USD 0.25)"
 MODEL="$(envget BRAIN_INGEST_MODEL sonnet)"
 TURNS="$(envget BRAIN_INGEST_TURNS 60)"
+PUSHSLEEP="$(envget BRAIN_PUSH_RETRY_SLEEP 2)"
 export BRAIN_LOCAL_URL; BRAIN_LOCAL_URL="$(brain_local_url)"
 export BRAIN_LOCAL_MODEL; BRAIN_LOCAL_MODEL="$(envget BRAIN_LOCAL_MODEL qwen2.5:14b-instruct)"
 export BRAIN_LOCAL_CHUNK_TOKENS; BRAIN_LOCAL_CHUNK_TOKENS="$(envget BRAIN_LOCAL_CHUNK_TOKENS 12000)"
@@ -169,6 +172,19 @@ fail() { # fail CLASS: alert with the error class only, record it, undo any copy
   matrix_alert "brain: ingest failed on $(envget SWARM_MACHINE "$(hostname -s)") ($1)" || true
   exit 1
 }
+# pull_rebase: a report pushed from another clone is rebased under, never merged over. A rebase that
+# conflicts is aborted at once, so the brain is never left mid-rebase (the next night's dirty check
+# would fail on it).
+pull_rebase() { git pull -q --rebase || { git rebase --abort >/dev/null 2>&1 || true; return 1; }; }
+# push_retry: push; when the upstream moved, rebase onto it and push again, three attempts in all.
+push_retry() {
+  local n=1
+  while ! git push -q; do
+    [ "$n" -lt 3 ] || return 1
+    n=$((n + 1)); sleep "$PUSHSLEEP"
+    pull_rebase || return 1
+  done
+}
 # commit_costs WHY: the month's spend is committed and pushed on its own, whatever else happens, so
 # a failover or a failed run cannot lose it.
 commit_costs() {
@@ -176,14 +192,14 @@ commit_costs() {
   [ -n "$(git -c core.quotePath=false status --porcelain -- state/costs.json)" ] || return 0
   git add -- state/costs.json && git commit -q -m "ingest: cost $TODAY ($1)" -- state/costs.json \
     || { log "cost record not committed"; return 0; }
-  [ -z "$upstream" ] || git push -q 2>/dev/null || log "cost record push failed; it goes with the next push"
+  [ -z "$upstream" ] || push_retry 2>/dev/null || log "cost record push failed; it goes with the next push"
 }
 
 commit_costs "left over"
 # One writer: an uncommitted hand edit (any tracked file, or a new file under wiki/, index.md or
 # log.md) stops the run until it is committed. Untracked notes under raw/ do not count.
 python3 "$MERGE" dirty "$BRAIN" >/dev/null || fail "dirty-tree"
-if [ -n "$upstream" ]; then git pull -q --ff-only || fail "git-pull"; else log "no upstream: pull and push skipped"; fi
+if [ -n "$upstream" ]; then pull_rebase || fail "git-pull"; else log "no upstream: pull and push skipped"; fi
 
 # --- stage A: digests and condensed notes (local) -----------------------------------------------
 out="$(python3 "$DIGEST" digest "$BRAIN")" || fail "digest"; log "digest: $out"
@@ -354,6 +370,6 @@ else git commit -q -m "ingest: $TODAY $N notes" || fail "git-commit"; fi
 COPYING=""
 python3 "$DIGEST" mark "$BRAIN" "$WORKDIR/note-shas.json" < "$QUEUE" >/dev/null
 q="$(( (LIMIT > TAKEN ? LIMIT : TAKEN) * 2 ))"; [ "$q" -le "$CHARS" ] || q="$CHARS"; echo "$q" > "$QSIZE"
-if [ -n "$upstream" ]; then git push -q || { log "push failed; the commit stays local and goes with the next run"; matrix_alert "brain: ingest committed but push failed on $(envget SWARM_MACHINE "$(hostname -s)")" || true; }; fi
+if [ -n "$upstream" ]; then push_retry || { log "push failed; the commit stays local and goes with the next run"; matrix_alert "brain: ingest committed but push failed on $(envget SWARM_MACHINE "$(hostname -s)")" || true; }; fi
 last_run "ok $N notes \$$cost"
 log "done: $N notes, \$$cost"
