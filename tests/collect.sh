@@ -228,6 +228,11 @@ eq "standby-sync: the pull held the sync lock, the collector did not" "1 0 1" "$
 eq "standby-sync: no lock left" 0 "$([ -d "$S/standby/.lock" ] && echo 1 || echo 0)"
 out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1)"
 eq "standby-sync: hourly, so the next pass does not push again" 0 "$(printf '%s\n' "$out" | grep -c 'chat files')"
+# Every pass asks lead.sh to beat for the lead (the watcher's lead check); a failure is never fatal.
+printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "$RLOG.beat"\nexit 1\n' > "$TMP/scripts/lead.sh"; rm -f "$RLOG.beat"
+out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
+eq "standby-sync: one lead beat per pass, a failed one not fatal" "beat 1" "$(cat "$RLOG.beat" 2>/dev/null) $(printf '%s\n' "$out" | grep -c '^rc=0$')"
+cp "$SRC/scripts/lead.sh" "$TMP/scripts/lead.sh"
 # standby-sync's standby pass also fast-forwards a clean brain clone here; a dirty one is left, a failure never fatal.
 UP="$TMP/brain-up"; CL="$TMP/brain-clone"; G="git -c user.name=t -c user.email=t@example.com"
 git init -q "$UP" && : > "$UP/index.md" && git -C "$UP" add . && $G -C "$UP" commit -q -m one && git clone -q "$UP" "$CL"
