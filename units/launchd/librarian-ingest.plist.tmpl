@@ -14,6 +14,7 @@
     <string>${SWARM_UNIT_PREFIX}.brain-ingest</string>
     <key>ProgramArguments</key>
     <array>
+        <string>/bin/bash</string><string>${SWARM_REPO}/scripts/job-alert.sh</string><string>run</string><string>brain-ingest</string><string>--</string>
         <string>/bin/bash</string>
         <string>${SWARM_REPO}/scripts/brain-ingest.sh</string>
         <string>run</string>
