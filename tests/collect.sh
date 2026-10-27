@@ -233,6 +233,11 @@ printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "$RLOG.beat"\nexit 1\n' > "$TMP/scr
 out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
 eq "standby-sync: one lead beat per pass, a failed one not fatal" "beat 1" "$(cat "$RLOG.beat" 2>/dev/null) $(printf '%s\n' "$out" | grep -c '^rc=0$')"
 cp "$SRC/scripts/lead.sh" "$TMP/scripts/lead.sh"
+# Every pass also runs the mail token check with --report (it throttles itself); never fatal.
+printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "$RLOG.mail"\nexit 1\n' > "$TMP/scripts/mail-connector.sh"; rm -f "$RLOG.mail"
+out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
+eq "standby-sync: one mail health report per pass, a failed one not fatal" "health --report 1" "$(cat "$RLOG.mail" 2>/dev/null) $(printf '%s\n' "$out" | grep -c '^rc=0$')"
+cp "$SRC/scripts/mail-connector.sh" "$TMP/scripts/mail-connector.sh"
 # standby-sync's standby pass also fast-forwards a clean brain clone here; a dirty one is left, a failure never fatal.
 UP="$TMP/brain-up"; CL="$TMP/brain-clone"; G="git -c user.name=t -c user.email=t@example.com"
 git init -q "$UP" && : > "$UP/index.md" && git -C "$UP" add . && $G -C "$UP" commit -q -m one && git clone -q "$UP" "$CL"
