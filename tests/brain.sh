@@ -307,10 +307,14 @@ eq "local model down: no claude" 0 "$(calls)"
 eq "local model down: alert names the class" 1 "$(grep -c '(local-model)' "$HELD")"
 sed -i.bak "s|^BRAIN_LOCAL_URL=.*|BRAIN_LOCAL_URL=$OURL|" "$SW/.env"
 
-# I7: a live lock stops a second run; a stale one is taken over
+# I7: a live lock holds a run back until it ends or SWARM_BRAIN_LOCK_WAIT runs out (exit 75, never a
+# silent skip); a stale one is taken over
 mkdir -p "$BR/raw/.state/ingest.lock"; sleep 300 & LIVE=$!; echo "$LIVE" > "$BR/raw/.state/ingest.lock/pid"
-eq "lock held: exit 0" 0 "$(job run)"; eq "lock held: no claude" 0 "$(calls)"
-eq "lock held: says so" 1 "$(grep -c 'another ingest' "$TMP/out")"
+eq "ingest_lock_timeout_exits_75: exit 75" 75 "$(SWARM_BRAIN_LOCK_WAIT=2 SWARM_BRAIN_LOCK_POLL=1 job run)"
+eq "ingest_lock_timeout_exits_75: no claude" 0 "$(calls)"
+eq "ingest_lock_timeout_exits_75: log line" 1 "$(grep -c 'still held by pid .* after 2s; giving up' "$TMP/out")"
+eq "ingest_lock_timeout_exits_75: the holder's lock is left alone" "$LIVE" "$(cat "$BR/raw/.state/ingest.lock/pid")"
+eq "ingest_lock_timeout_exits_75: recorded for status" 1 "$(grep -c 'failed lock-timeout' "$BR/raw/.state/last-run")"
 kill "$LIVE" 2>/dev/null; wait "$LIVE" 2>/dev/null
 echo 999999 > "$BR/raw/.state/ingest.lock/pid"
 
@@ -321,6 +325,17 @@ eq "stale lock taken over" 1 "$(grep -c 'stale lock' "$TMP/out")"
 eq "lock released after the run" no "$([ -d "$BR/raw/.state/ingest.lock" ] && echo yes || echo no)"
 eq "cap: one alert held" 1 "$(grep -c 'brain: ingest paused, monthly cap reached' "$HELD")"
 eq "cap: says so" 1 "$(grep -c 'ingest paused' "$TMP/out")"
+
+# a lock held by a live process (Crown filing a report: it drops the lock when done) is waited for, then
+# the run goes on (here it ends at the cap, so no claude is needed to see it get past the lock)
+mkdir -p "$BR/raw/.state/ingest.lock"; sleep 2 & HOLD=$!; echo "$HOLD" > "$BR/raw/.state/ingest.lock/pid"
+( while kill -0 "$HOLD" 2>/dev/null; do sleep 0.2; done; rm -rf "$BR/raw/.state/ingest.lock" ) &
+SWARM_BRAIN_LOCK_WAIT=30 SWARM_BRAIN_LOCK_POLL=1 job run > "$TMP/rc"; wait "$HOLD" 2>/dev/null
+eq "ingest_waits_for_crown_lock: exit 0" 0 "$(cat "$TMP/rc")"
+eq "ingest_waits_for_crown_lock: the log says waited" 1 "$(grep -c 'waited [0-9]*s for the ingest lock' "$TMP/out")"
+eq "ingest_waits_for_crown_lock: it ran past the lock" 1 "$(grep -c 'ingest paused' "$TMP/out")"
+eq "ingest_waits_for_crown_lock: not taken as stale" 0 "$(grep -c 'stale lock' "$TMP/out")"
+eq "ingest_waits_for_crown_lock: lock released" no "$([ -d "$BR/raw/.state/ingest.lock" ] && echo yes || echo no)"
 eq "I6: the spend is tracked in the brain" "state/costs.json" "$(g ls-files state)"
 eq "I6: and pushed" "$(g rev-parse HEAD)" "$(git -C "$OR" rev-parse main)"
 job run >/dev/null

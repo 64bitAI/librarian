@@ -48,6 +48,8 @@
 # characters of notes), BRAIN_INGEST_MODEL (sonnet), BRAIN_INGEST_TURNS (60); git: the pull rebases and a failed push is
 # retried after a rebase (3 attempts, BRAIN_PUSH_RETRY_SLEEP seconds apart, default 2), so a note pushed
 # from another clone during the run is kept.
+# The ingest lock (raw/.state/ingest.lock) is waited for while a live process holds it:
+# SWARM_BRAIN_LOCK_WAIT seconds (1800), polling every SWARM_BRAIN_LOCK_POLL (10); then exit 75.
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 swarm_init "$@" || exit 1; set -- "${SWARM_ARGS[@]+"${SWARM_ARGS[@]}"}"
@@ -153,11 +155,24 @@ upstream=""; git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1 && upstream=1
 
 # --- one run at a time --------------------------------------------------------------------------
 LOCK="$BRAIN/raw/.state/ingest.lock"
-if ! mkdir "$LOCK" 2>/dev/null; then
+# A live holder (Crown filing a report into the brain, or another ingest) is waited for, up to
+# SWARM_BRAIN_LOCK_WAIT seconds (1800), polling every SWARM_BRAIN_LOCK_POLL (10); a run never skips
+# silently: on a timeout it logs and exits 75 (the job alerts on a non-zero exit). A lock whose pid
+# is not alive is stale and taken over, as before.
+LOCK_WAIT="$(envget SWARM_BRAIN_LOCK_WAIT 1800)"; LOCK_POLL="$(envget SWARM_BRAIN_LOCK_POLL 10)"
+waited=0
+while ! mkdir "$LOCK" 2>/dev/null; do
   pid="$(cat "$LOCK/pid" 2>/dev/null || true)"
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then log "another ingest (pid $pid) is running; nothing done"; exit 0; fi
-  log "stale lock (pid ${pid:-none}) taken over"; rm -rf "$LOCK"; mkdir "$LOCK"
-fi
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    if [ "$waited" -ge "$LOCK_WAIT" ]; then
+      log "ingest lock still held by pid $pid after ${waited}s; giving up"; last_run "failed lock-timeout"; exit 75
+    fi
+    [ "$waited" -gt 0 ] || log "ingest lock held by pid $pid; waiting up to ${LOCK_WAIT}s"
+    sleep "$LOCK_POLL"; waited=$((waited + LOCK_POLL)); continue
+  fi
+  log "stale lock (pid ${pid:-none}) taken over"; rm -rf "$LOCK"
+done
+[ "$waited" -eq 0 ] || log "waited ${waited}s for the ingest lock"
 echo $$ > "$LOCK/pid"
 WORKDIR=""; CREATED=""; COPYING=""
 cleanup() { [ -z "$WORKDIR" ] || rm -rf "$WORKDIR"; rm -rf "$LOCK"; }
