@@ -1,0 +1,11 @@
+# gitleaks: the default rules. One file is allowlisted: tests/brain.sh, whose fixtures are obviously
+# fake keys and tokens (an AKIA...MNOP id, token=abcd1234efgh5678, sk-ant-...AAAA) that the masker and
+# the secret scan must catch. Everything else is scanned, history included.
+title = "librarian"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "fake secrets for the masking and secret-scan tests"
+paths = ['''^tests/brain\.sh$''']

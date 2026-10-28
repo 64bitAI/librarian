@@ -1,0 +1,10 @@
+{
+  "name": "librarian",
+  "description": "Read a git wiki of what you learned with Claude, and add notes to it for the nightly librarian ingest.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Librarian contributors"
+  },
+  "repository": "https://github.com/64bitAI/librarian",
+  "license": "MIT"
+}

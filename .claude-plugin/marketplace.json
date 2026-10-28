@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "librarian",
+  "description": "Librarian: a git wiki kept from your chats and notes.",
+  "owner": {
+    "name": "Librarian contributors"
+  },
+  "plugins": [
+    {
+      "name": "librarian",
+      "description": "Read a git wiki of what you learned with Claude, and add notes to it for the nightly librarian ingest.",
+      "source": ".",
+      "category": "productivity"
+    }
+  ]
+}

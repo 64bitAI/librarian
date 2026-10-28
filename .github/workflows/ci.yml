@@ -1,0 +1,74 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# No job may see a real API key. They are set empty here, and each job's first step fails if one is
+# set anyway (the suites also unset them). No job calls a model: claude and Ollama are stubs in the
+# suites. Actions are pinned by commit SHA.
+env:
+  OPENAI_API_KEY: ""
+  ANTHROPIC_API_KEY: ""
+  ANTHROPIC_AUTH_TOKEN: ""
+  CLAUDE_CODE_OAUTH_TOKEN: ""
+  GEMINI_API_KEY: ""
+  GOOGLE_API_KEY: ""
+
+jobs:
+  test:
+    name: suites (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: No API key in the environment
+        shell: bash
+        run: |
+          bad=0
+          for v in $(compgen -e); do
+            case "$v" in
+              *_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN)
+                if [ -n "${!v}" ]; then echo "::error::$v is set"; bad=1; fi ;;
+            esac
+          done
+          exit "$bad"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: python compiles
+        run: python3 -m py_compile lib/*.py
+      - name: suites
+        run: bash tests/run.sh
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: shellcheck -S warning -x bin/librarian lib/*.sh tests/*.sh scripts/*.sh
+
+  gitleaks:
+    name: gitleaks (full history)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+      # v8.30.1 (2026-02-21); the module path is still the old one.
+      - run: go install github.com/zricethezav/gitleaks/v8@v8.30.1
+      - run: $(go env GOPATH)/bin/gitleaks git --log-opts=--all --no-banner
+      - run: $(go env GOPATH)/bin/gitleaks dir --no-banner .

@@ -1,0 +1,9 @@
+# One extended regular expression per line; blank lines and lines starting with # are skipped.
+# Copy this file to scripts/personal-data.patterns (which git ignores) and replace the placeholders.
+# Matching is case-insensitive and on word boundaries (grep -iwE).
+owner-first-name
+owner-last-name
+owner-email-local-part
+host-name
+tailnet-id
+employer-name
