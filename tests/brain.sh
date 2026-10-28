@@ -317,6 +317,14 @@ eq "ingest_lock_timeout_exits_75: the holder's lock is left alone" "$LIVE" "$(ca
 eq "ingest_lock_timeout_exits_75: an alert is raised" 1 "$(grep -c 'brain: ingest gave up waiting for the ingest lock on m1 (lock-timeout)' "$HELD")"
 eq "ingest_lock_timeout_exits_75: recorded for status" 1 "$(grep -c 'failed lock-timeout' "$BR/raw/.state/last-run")"
 kill "$LIVE" 2>/dev/null; wait "$LIVE" 2>/dev/null
+# lock settings that are not whole seconds (or a poll under 1) fail at once, before the collect
+eq "lock_settings_checked: a non-numeric wait exits 2" 2 "$(SWARM_BRAIN_LOCK_WAIT=5m job run)"
+eq "lock_settings_checked: says which" 1 "$(grep -c 'SWARM_BRAIN_LOCK_WAIT=5m is not a whole number' "$TMP/out")"
+eq "lock_settings_checked: nothing ran" 0 "$(calls)"
+eq "lock_settings_checked: not even the collect" 0 "$(grep -c 'collect' "$TMP/out")"
+eq "lock_settings_checked: a non-numeric poll exits 2" 2 "$(SWARM_BRAIN_LOCK_POLL=x job run)"
+eq "lock_settings_checked: a zero poll exits 2" 2 "$(SWARM_BRAIN_LOCK_POLL=0 job run)"
+eq "lock_settings_checked: says at least 1" 1 "$(grep -c 'SWARM_BRAIN_LOCK_POLL must be at least 1' "$TMP/out")"
 echo 999999 > "$BR/raw/.state/ingest.lock/pid"
 
 # the cap: $9.6 spent, cap $10, under $0.5 usable: skipped, alerted once a month; the record is committed

@@ -140,6 +140,12 @@ case "${1:-run}" in
   *) echo "usage: $0 [run|install|uninstall|status]" >&2; exit 2 ;;
 esac
 
+# The lock settings (used below) are checked before anything runs: a typo fails now, not after the
+# collect and the gate.
+LOCK_WAIT="$(envget SWARM_BRAIN_LOCK_WAIT 1800)"; LOCK_POLL="$(envget SWARM_BRAIN_LOCK_POLL 10)"
+case "$LOCK_WAIT" in ''|*[!0-9]*) echo "SWARM_BRAIN_LOCK_WAIT=$LOCK_WAIT is not a whole number of seconds" >&2; exit 2 ;; esac
+case "$LOCK_POLL" in ''|*[!0-9]*) echo "SWARM_BRAIN_LOCK_POLL=$LOCK_POLL is not a whole number of seconds" >&2; exit 2 ;; esac
+[ "$LOCK_POLL" -ge 1 ] || { echo "SWARM_BRAIN_LOCK_POLL must be at least 1 second" >&2; exit 2; }
 need_brain
 if [ "$(role_get role)" != primary ]; then log "not the primary: the brain has one writer; nothing done"; exit 0; fi
 # This host's own chats first (the standby pushes its own, standby-sync.sh); a failed copy is logged
@@ -158,8 +164,7 @@ LOCK="$BRAIN/raw/.state/ingest.lock"
 # A live holder (Reign filing a report into the brain, or another ingest) is waited for, up to
 # SWARM_BRAIN_LOCK_WAIT seconds (1800), polling every SWARM_BRAIN_LOCK_POLL (10); a run never skips
 # silently: on a timeout it logs and exits 75 (the job alerts on a non-zero exit). A lock whose pid
-# is not alive is stale and taken over, as before.
-LOCK_WAIT="$(envget SWARM_BRAIN_LOCK_WAIT 1800)"; LOCK_POLL="$(envget SWARM_BRAIN_LOCK_POLL 10)"
+# is not alive is stale and taken over, as before. LOCK_WAIT and LOCK_POLL are checked above.
 waited=0; grace=""
 while ! mkdir "$LOCK" 2>/dev/null; do
   pid="$(cat "$LOCK/pid" 2>/dev/null || true)"
