@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 # Copies this host's chats into the brain's raw/chats/ for the nightly ingest (brain-ingest.sh):
-# Claude Code ($(claude_config_dir)/projects -> claude-code/<host>/<project>/), Codex
-# ($(engine_home codex)/sessions -> codex/<host>/YYYY/MM/DD/) and Gemini
-# ($(engine_home gemini)/.gemini/tmp/<slug>/{.project_root,chats/session-*} -> gemini/<host>/<slug>/).
+# Claude Code ($(claude_config_dir)/projects -> claude-code/<host>/<project>/).
 # <host> is SWARM_MACHINE (else the short hostname). The list is made here, before anything moves
-# (brain_digest.py collect-list): work material (BRAIN_EXCLUDE), temp folders, our own Codex consults
-# and Gemini slugs with no folder never leave this host. rsync -a keeps each file's mtime (the
+# (brain_digest.py collect-list): work material (BRAIN_EXCLUDE) and temp folders never leave this
+# host. rsync -a keeps each file's mtime (the
 # digest pass's signature); nothing is ever deleted at the brain.
 #   primary  copies into its own brain (this swarm's SWARM_BRAIN_DIR)
 #   standby  pushes to the primary over the pair ssh, into the brain directory the primary names
@@ -63,7 +61,7 @@ export BRAIN_EXCLUDE; BRAIN_EXCLUDE="$(envget BRAIN_EXCLUDE)"
 # runs this: a work session's SWARM_CLAUDE_CONFIG must not send its chats.
 cc="$( unset SWARM_CLAUDE_CONFIG; claude_config_dir )" && [ -n "$cc" ] || { log "brain collect: no Claude config directory for this swarm; nothing collected"; exit 0; }
 python3 "$ROOT/scripts/brain_digest.py" collect-list "$(envget SWARM_MACHINE "$(hostname -s)")" "$LINKS" \
-  "$cc/projects" "$(engine_home codex)/sessions" "$(engine_home gemini)/.gemini/tmp" > "$LIST"
+  "$cc/projects" > "$LIST"
 n="$(wc -l < "$LIST" | tr -d ' ')"
 [ "$n" -gt 0 ] || { log "brain collect: no chats to copy"; date +%s > "$STAMP"; exit 0; }
 

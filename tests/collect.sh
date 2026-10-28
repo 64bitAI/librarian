@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # brain-collect.sh (and brain_digest.py collect-list) against synthetic chat trees in a throwaway
-# HOME: work folders, temp folders, Codex consults and Gemini slugs without a folder never reach the
+# HOME: work folders and temp folders never reach the
 # list; the primary copies into its own brain, the standby pushes to the primary's (asked of it).
 # rsync is a stub that records its argv and the --files-from list, then runs the real rsync with a
 # remote destination (host:/path) mapped to $TMP/remote/path; ssh is a stub answering stack-role.sh.
@@ -49,7 +49,7 @@ for c in docker curl; do printf '#!/bin/sh\nexit 1\n' > "$TMP/bin/$c"; done
 printf '#!/bin/sh\necho "{\\"BackendState\\":\\"Running\\",\\"MagicDNSSuffix\\":\\"${TS_NET:-ts.example}\\"}"\n' > "$TMP/bin/tailscale"
 chmod +x "$TMP/bin/"*
 
-# --- fixtures: the personal swarm's Claude, Codex and Gemini homes are under the hermetic HOME ----
+# --- fixtures: the personal swarm's Claude home is under the hermetic HOME ----
 S="$HOME/.local/state/swarm/personal"; mkdir -p "$S"
 BR="$TMP/brain"; mkdir -p "$BR/raw/chats"
 setenv() { printf 'SWARM_MACHINE=host1\nSWARM_BRAIN_DIR=%s\n' "$BR" > "$S/.env"; [ $# = 0 ] || printf '%s\n' "$@" >> "$S/.env"; }
@@ -83,47 +83,22 @@ cc -Users-o-src-other o1.jsonl /Users/o/src/other
 sed -i.bak 's|"cwd":"/Users/o/src/personal"|"cwd":"/private/var/folders/zz/T/tmp.q1/cwd"|' "$HOME/.claude/projects/-Users-o-src-other/o1.jsonl"
 rm -f "$HOME/.claude/projects/-Users-o-src-other/o1.jsonl.bak"
 cc -Users-o-src-personal s8.jsonl /private/tmp/claude-501/x/scratchpad
-cx() { # cx NAME ORIGINATOR CWD: a Codex rollout (an empty CWD writes no session_meta)
-  local d="$HOME/.codex/sessions/2026/10/01"; mkdir -p "$d"
-  {
-    [ -z "$3" ] || printf '{"type":"session_meta","payload":{"id":"x","cwd":"%s","originator":"%s"}}\n' "$3" "$2"
-    echo '{"type":"event_msg","payload":{"type":"user_message","message":"hello"}}'
-  } > "$d/rollout-2026-10-01T10-00-00-$1.jsonl"
-}
-cx a codex_cli_rs "$P"; cx b codex_cli_rs /Users/o/src/employerco/api; cx c codex_exec "$P"; cx d codex_cli_rs ""
-cx e codex_cli_rs /tmp/x; cx f codex_cli_rs "$P"
-echo '{"type":"turn_context","payload":{"cwd":"/tmp/later"}}' >> "$HOME/.codex/sessions/2026/10/01/rollout-2026-10-01T10-00-00-f.jsonl"
-cx g codex_cli_rs "$P"
-echo '{"type":"turn_context","payload":{"cwd":"/Users/o/src/wrk/api"}}' >> "$HOME/.codex/sessions/2026/10/01/rollout-2026-10-01T10-00-00-g.jsonl"
-touch -t 202001021234.56 "$HOME/.codex/sessions/2026/10/01/rollout-2026-10-01T10-00-00-a.jsonl"
-gm() { # gm SLUG ROOT|-: a Gemini slug with one session (- writes no .project_root)
-  local d="$HOME/.gemini/tmp/$1"; mkdir -p "$d/chats" "$d/logs"
-  [ "$2" = - ] || printf '%s\n' "$2" > "$d/.project_root"
-  echo '{"type":"user","content":"hello"}' > "$d/chats/session-2026-10-01T10-00-$1.jsonl"
-}
-gm personal "$P"; gm noroot -; gm tmp /private/tmp; gm g /private/tmp/claude-501/g; gm work /Users/o/src/employerco/x
-mkdir -p "$HOME/.gemini/tmp/0123abcd"; echo '[]' > "$HOME/.gemini/tmp/0123abcd/logs.json"
-
 WANT="claude-code/host1/-Users-o-src-mixed/m1.jsonl
 claude-code/host1/-Users-o-src-personal/s1.jsonl
 claude-code/host1/-Users-o-src-personal/s1/subagents/agent-a.jsonl
-claude-code/host1/-Users-o-src-personal/s8.jsonl
-codex/host1/2026/10/01/rollout-2026-10-01T10-00-00-a.jsonl
-codex/host1/2026/10/01/rollout-2026-10-01T10-00-00-f.jsonl
-gemini/host1/personal/.project_root
-gemini/host1/personal/session-2026-10-01T10-00-personal.jsonl"
+claude-code/host1/-Users-o-src-personal/s8.jsonl"
 tree() { (cd "$1" && find . -type f | sed 's|^\./||' | LC_ALL=C sort); }
 mtime() { python3 -c 'import os,sys; print(int(os.stat(sys.argv[1]).st_mtime))' "$1"; }
 run() { : > "$RLOG"; : > "$SLOG"; rm -f "$RLOG.list" "$RLOG.lock"; bash "$TMP/scripts/brain-collect.sh" --swarm personal "$@" 2>&1; echo "rc=$?"; }
 lines() { printf '%s\n' "$1" | grep -vc '^rc='; }
 
 # --- the list itself -------------------------------------------------------------------------------
-L="$(python3 "$TMP/scripts/brain_digest.py" collect-list host1 "" "$HOME/.claude/projects" "$HOME/.codex/sessions" "$HOME/.gemini/tmp" | LC_ALL=C sort)"
+L="$(python3 "$TMP/scripts/brain_digest.py" collect-list host1 "" "$HOME/.claude/projects" | LC_ALL=C sort)"
 eq "collect-list: only personal chats, in the brain's layout" "$WANT" "$L"
-L2="$(BRAIN_EXCLUDE=mixed python3 "$TMP/scripts/brain_digest.py" collect-list host1 "" "$HOME/.claude/projects" "" "" | LC_ALL=C sort)"
+L2="$(BRAIN_EXCLUDE=mixed python3 "$TMP/scripts/brain_digest.py" collect-list host1 "" "$HOME/.claude/projects" | LC_ALL=C sort)"
 eq "collect-list: BRAIN_EXCLUDE replaces the default" "$({ printf '%s\n' "$WANT" | grep claude-code | grep -v mixed
   echo claude-code/host1/-Users-o-src-employerco-app/w1.jsonl; } | LC_ALL=C sort)" "$L2"
-eq "collect-list: missing sources are skipped" "" "$(python3 "$TMP/scripts/brain_digest.py" collect-list host1 "" "$TMP/none" "" "$TMP/none2")"
+eq "collect-list: missing sources are skipped" "" "$(python3 "$TMP/scripts/brain_digest.py" collect-list host1 "" "$TMP/none")"
 
 # A subagent's type (its sibling agent-*.meta.json agentType) is matched too: an wrk subagent run from
 # a personal project stays here; therapy and legal stay when BRAIN_EXCLUDE names them; food travels
@@ -132,27 +107,26 @@ SA="$HOME/.claude/projects/-Users-o-src-personal/s1/subagents"
 for a in v:wrk:wrk-voice t:therapy:therapy l:legal:legal f:food:food; do
   cp "$SA/agent-a.jsonl" "$SA/agent-${a%%:*}.jsonl"; printf '{"agentType":"%s","description":"x"}\n' "${a#*:}" > "$SA/agent-${a%%:*}.meta.json"
 done
-L="$(python3 "$TMP/scripts/brain_digest.py" collect-list host1 "" "$HOME/.claude/projects" "" "" | grep /subagents/ | LC_ALL=C sort | tr '\n' ' ')"
+L="$(python3 "$TMP/scripts/brain_digest.py" collect-list host1 "" "$HOME/.claude/projects" | grep /subagents/ | LC_ALL=C sort | tr '\n' ' ')"
 eq "collect-list: an wrk subagent stays, others travel with their meta" "$(printf '%s ' \
   claude-code/host1/-Users-o-src-personal/s1/subagents/agent-a.jsonl \
   claude-code/host1/-Users-o-src-personal/s1/subagents/agent-f.jsonl claude-code/host1/-Users-o-src-personal/s1/subagents/agent-f.meta.json \
   claude-code/host1/-Users-o-src-personal/s1/subagents/agent-l.jsonl claude-code/host1/-Users-o-src-personal/s1/subagents/agent-l.meta.json \
   claude-code/host1/-Users-o-src-personal/s1/subagents/agent-t.jsonl claude-code/host1/-Users-o-src-personal/s1/subagents/agent-t.meta.json)" "$L"
-L="$(BRAIN_EXCLUDE='employerco|(?<![a-z0-9])wrk(?![a-z0-9])|gitea|therapy|legal' python3 "$TMP/scripts/brain_digest.py" collect-list host1 "" "$HOME/.claude/projects" "" "" | grep /subagents/ | sed 's|.*/||' | LC_ALL=C sort | tr '\n' ' ')"
+L="$(BRAIN_EXCLUDE='employerco|(?<![a-z0-9])wrk(?![a-z0-9])|gitea|therapy|legal' python3 "$TMP/scripts/brain_digest.py" collect-list host1 "" "$HOME/.claude/projects" | grep /subagents/ | sed 's|.*/||' | LC_ALL=C sort | tr '\n' ' ')"
 eq "collect-list: BRAIN_EXCLUDE with therapy|legal keeps those subagents here; food still travels" "agent-a.jsonl agent-f.jsonl agent-f.meta.json " "$L"
 printf 'not json' > "$SA/agent-f.meta.json"
-eq "collect-list: an unreadable meta keeps the subagent" 1 "$(python3 "$TMP/scripts/brain_digest.py" collect-list host1 "" "$HOME/.claude/projects" "" "" | grep -c '/agent-f.jsonl$')"
+eq "collect-list: an unreadable meta keeps the subagent" 1 "$(python3 "$TMP/scripts/brain_digest.py" collect-list host1 "" "$HOME/.claude/projects" | grep -c '/agent-f.jsonl$')"
 rm -f "$SA"/agent-[vtlf].*
 
 # --- the primary: a local copy into its own brain --------------------------------------------------
 setenv; setrole primary
 out="$(run run)"
 eq "primary: exit 0" 1 "$(printf '%s\n' "$out" | grep -c '^rc=0$')"
-eq "primary: one line, the count" "1 1" "$(lines "$out") $(printf '%s\n' "$out" | grep -c 'collected 8 chat files into the brain')"
+eq "primary: one line, the count" "1 1" "$(lines "$out") $(printf '%s\n' "$out" | grep -c 'collected 4 chat files into the brain')"
 eq "primary: exactly the listed files arrive" "$WANT" "$(tree "$BR/raw/chats")"
 eq "primary: the list handed to rsync" "$WANT" "$(LC_ALL=C sort "$RLOG.list")"
 eq "primary: a session keeps its mtime" "$(mtime "$HOME/.claude/projects/-Users-o-src-personal/s1.jsonl")" "$(mtime "$BR/raw/chats/claude-code/host1/-Users-o-src-personal/s1.jsonl")"
-eq "primary: a rollout keeps its mtime" "$(mtime "$HOME/.codex/sessions/2026/10/01/rollout-2026-10-01T10-00-00-a.jsonl")" "$(mtime "$BR/raw/chats/codex/host1/2026/10/01/rollout-2026-10-01T10-00-00-a.jsonl")"
 eq "primary: files arrive, not links" 0 "$(find "$BR/raw/chats" -type l | wc -l | tr -d ' ')"
 eq "primary: rsync -aL, never --delete" "1 0" "$(grep -cE -- '(^| )-aL( |$)' "$RLOG") $(grep -c -- '--delete' "$RLOG")"
 eq "primary: no ssh" 0 "$(wc -l < "$SLOG" | tr -d ' ')"
@@ -166,11 +140,11 @@ run run >/dev/null; eq "primary: a chat gone at the source stays in the brain" 1
 mkdir -p "$HOME/.claude-work/projects/-Users-o-src-workonly"
 cp "$HOME/.claude/projects/-Users-o-src-personal/s1.jsonl" "$HOME/.claude-work/projects/-Users-o-src-workonly/wk.jsonl"
 out="$(SWARM_CLAUDE_CONFIG="$HOME/.claude-work" run run)"
-eq "an exported SWARM_CLAUDE_CONFIG is ignored: none of its chats listed" "0 1" "$(grep -c workonly "$RLOG.list") $(printf '%s\n' "$out" | grep -c 'collected 8 chat files')"
+eq "an exported SWARM_CLAUDE_CONFIG is ignored: none of its chats listed" "0 1" "$(grep -c workonly "$RLOG.list") $(printf '%s\n' "$out" | grep -c 'collected 4 chat files')"
 # The brain is this swarm's .env SWARM_BRAIN_DIR, never one exported by the calling session.
 OTHER="$TMP/other-brain"; mkdir -p "$OTHER"
 out="$(SWARM_BRAIN_DIR="$OTHER" run run)"
-eq "primary: an exported SWARM_BRAIN_DIR is ignored" "1 0" "$(printf '%s\n' "$out" | grep -c 'collected 8 chat files') $(find "$OTHER" -type f | wc -l | tr -d ' ')"
+eq "primary: an exported SWARM_BRAIN_DIR is ignored" "1 0" "$(printf '%s\n' "$out" | grep -c 'collected 4 chat files') $(find "$OTHER" -type f | wc -l | tr -d ' ')"
 
 # --- the hourly stamp ------------------------------------------------------------------------------
 out="$(run hourly)"; eq "hourly: a second run within the hour does nothing" "1 0 0" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(wc -l < "$RLOG" | tr -d ' ') $(lines "$out")"
@@ -183,7 +157,7 @@ setenv SWARM_PAIR_SSH=peer.example; setrole standby; rm -f "$S/.brain-collected"
 mkdir -p "$REMOTE/srv/brain/raw"   # the primary's brain (raw/chats is made by the push)
 out="$(run run)"
 eq "standby: exit 0, one line" "1 1" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(lines "$out")"
-eq "standby: says where" 1 "$(printf '%s\n' "$out" | grep -c 'copied 8 chat files to the primary')"
+eq "standby: says where" 1 "$(printf '%s\n' "$out" | grep -c 'copied 4 chat files to the primary')"
 eq "standby: asks the primary for its brain" 1 "$(grep -c 'scripts/stack-role.sh brain' "$SLOG")"
 eq "standby: pushes over the pair ssh to that brain" 1 "$(grep -c -- '-e ssh .*peer.example:/srv/brain/raw/chats/$' "$RLOG")"
 eq "standby: exactly the listed files arrive" "$WANT" "$(tree "$REMOTE/srv/brain/raw/chats")"
@@ -223,7 +197,7 @@ setenv SWARM_PAIR_SSH=peer.example; setrole standby; rm -f "$S/.brain-collected"
 : > "$RLOG"; : > "$SLOG"; rm -f "$RLOG.lock"
 out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
 eq "standby-sync: exit 0" 1 "$(printf '%s\n' "$out" | grep -c '^rc=0$')"
-eq "standby-sync: chats pushed" 1 "$(printf '%s\n' "$out" | grep -c 'copied 8 chat files to the primary')"
+eq "standby-sync: chats pushed" 1 "$(printf '%s\n' "$out" | grep -c 'copied 4 chat files to the primary')"
 eq "standby-sync: the pull held the sync lock, the collector did not" "1 0 1" "$(cat "$RLOG.lock" 2>/dev/null | grep -c 'srv/state/standby/latest') $(cat "$RLOG.lock" 2>/dev/null | grep -c 'brain/raw/chats') $(grep -c 'peer.example:/srv/brain/raw/chats/' "$RLOG")"
 eq "standby-sync: no lock left" 0 "$([ -d "$S/standby/.lock" ] && echo 1 || echo 0)"
 out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1)"
@@ -288,7 +262,7 @@ setenv; setrole primary; rm -rf "$BR/raw/chats"; mkdir -p "$BR/raw/chats"; git -
 mkdir -p "$S/gates"; printf 'echo "test gate"\nexit 10\n' > "$S/gates/brain-ingest"
 out="$(bash "$TMP/scripts/brain-ingest.sh" --swarm personal run 2>&1; echo "rc=$?")"
 eq "brain-ingest: exit 0" 1 "$(printf '%s\n' "$out" | grep -c '^rc=0$')"
-eq "brain-ingest: collected, then gated" "collected gated" "$(printf '%s\n' "$out" | sed -n 's/.*\(collected\) 8 chat files.*/\1/p; s/.*\(gated\): test gate.*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
+eq "brain-ingest: collected, then gated" "collected gated" "$(printf '%s\n' "$out" | sed -n 's/.*\(collected\) 4 chat files.*/\1/p; s/.*\(gated\): test gate.*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
 eq "brain-ingest: the chats arrived" "$WANT" "$(tree "$BR/raw/chats")"
 out="$(RSYNC_FAIL=1 bash "$TMP/scripts/brain-ingest.sh" --swarm personal run 2>&1; echo "rc=$?")"
 eq "brain-ingest: a failed collection never fails the run" "1 1" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(printf '%s\n' "$out" | grep -c 'gated: test gate')"
