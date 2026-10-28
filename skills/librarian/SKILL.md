@@ -5,8 +5,10 @@ description: Read the user's librarian wiki (people, projects, decisions, histor
 
 # The wiki
 
-The wiki is a git repo of Markdown kept by the librarian ingest. Its path is the `wiki_dir` in
-`~/.config/librarian/librarian.toml`; ask the user if there is none.
+The wiki is a git repo of Markdown kept by the librarian ingest. Find it as the CLI does:
+`LIBRARIAN_WIKI_DIR` (then the older `SWARM_BRAIN_DIR`) in the environment first, else the
+`wiki_dir` in the config (`LIBRARIAN_CONFIG`, else `~/.config/librarian/librarian.toml`); ask the
+user if none is set.
 
 Read:
 - Read `index.md` first, then open only the pages it lists for the question.

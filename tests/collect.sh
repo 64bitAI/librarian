@@ -35,7 +35,7 @@ chmod +x "$TMP/bin/"*
 BR="$TMP/brain"; mkdir -p "$BR/raw/chats"
 CONF="$TMP/librarian.toml"; export LIBRARIAN_CONFIG="$CONF"
 SD="$TMP/state"
-setconf() { printf 'wiki_dir = "%s"\nhost = "host1"\nstate_dir = "%s"\nexclude = '"'%s'"'\n' "$BR" "$SD" 'employerco|(?<![a-z0-9])wrk(?![a-z0-9])' > "$CONF"; }
+setconf() { printf 'wiki_dir = "%s"\nhost = "host1"\nstate_dir = "%s"\ncollect_from = "%s"\nexclude = '"'%s'"'\n' "$BR" "$SD" "$HOME/.claude/projects" 'employerco|(?<![a-z0-9])wrk(?![a-z0-9])' > "$CONF"; }
 cc() { # cc FOLDER FILE CWD [TITLE]: a Claude Code session whose second record carries CWD
   local d="$HOME/.claude/projects/$1"; mkdir -p "$(dirname "$d/$2")"
   {
@@ -121,7 +121,14 @@ eq "no lock left behind" 0 "$([ -d "$SD/.brain-collect.lock" ] && echo 1 || echo
 echo keep > "$BR/raw/chats/claude-code/host1/-Users-o-src-personal/gone.jsonl"
 run >/dev/null; eq "local: a chat gone at the source stays in the wiki" 1 "$([ -f "$BR/raw/chats/claude-code/host1/-Users-o-src-personal/gone.jsonl" ] && echo 1 || echo 0)"
 rm -f "$BR/raw/chats/claude-code/host1/-Users-o-src-personal/gone.jsonl"
-# collect_from names the Claude projects folder (default ~/.claude/projects)
+# No collect_from: refused, never a guess at ~/.claude/projects (another login's chats).
+grep -v '^collect_from' "$CONF" > "$CONF.n"; mv "$CONF.n" "$CONF"
+out="$(run)"
+eq "no collect_from: exit 0, one line, no rsync" "1 1 0" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(printf '%s\n' "$out" | grep -c 'no source set (collect_from, LIBRARIAN_COLLECT_FROM); nothing collected') $(grep -c . "$RLOG")"
+out="$(LIBRARIAN_COLLECT_FROM='' run)"
+eq "empty LIBRARIAN_COLLECT_FROM: refused too" "1 0" "$(printf '%s\n' "$out" | grep -c 'no source set') $(grep -c . "$RLOG")"
+setconf
+# collect_from names the Claude projects folder
 mkdir -p "$HOME/.claude-work/projects/-Users-o-src-workonly"
 cp "$HOME/.claude/projects/-Users-o-src-personal/s1.jsonl" "$HOME/.claude-work/projects/-Users-o-src-workonly/wk.jsonl"
 out="$(LIBRARIAN_COLLECT_FROM="$HOME/.claude-work/projects" run)"

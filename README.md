@@ -55,7 +55,7 @@ overlapping runs. Other tools that write into the wiki can take the same lock.
 
 ```toml
 wiki_dir = "/home/me/wiki"           # the git wiki (required)
-collect_from = "/home/me/.claude/projects"   # default ~/.claude/projects
+collect_from = "/home/me/.claude/projects"   # required: unset, nothing is collected
 host = "laptop"                      # the name chats are filed under; default the host name
 exclude = 'acme|(?<![a-z0-9])acme-'  # a regex: work folders, titles and accounts never collected
 budget_usd = 10                      # monthly cap for both stages

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copies this host's Claude Code chats into the wiki's raw/chats/ for the ingest (lib/ingest.sh):
-# <collect_from> (default ~/.claude/projects) -> raw/chats/claude-code/<host>/<project>/, where
+# <collect_from> (no default: unset, nothing is collected) -> raw/chats/claude-code/<host>/<project>/, where
 # <host> is host_name (lib/common.sh). The list is made here, before anything moves
 # (brain_digest.py collect-list): work material (BRAIN_EXCLUDE) and temp folders never leave this
 # host. rsync -a keeps each file's mtime (the digest pass's signature); nothing is ever deleted at
@@ -48,7 +48,10 @@ else
     *) log "brain collect: --to $dest is neither an absolute path nor host:/path; nothing collected"; exit 0 ;;
   esac
 fi
-src="$(abs_path collect_from "$(envget LIBRARIAN_COLLECT_FROM "$HOME/.claude/projects")")" || exit 0
+# No guessing at the source: a default could copy another login's chats into this wiki.
+src="$(envget LIBRARIAN_COLLECT_FROM)"
+[ -n "$src" ] || { log "brain collect: no source set (collect_from, LIBRARIAN_COLLECT_FROM); nothing collected"; exit 0; }
+src="$(abs_path collect_from "$src")" || exit 0
 
 if ! mkdir "$LOCK" 2>/dev/null; then
   pid="$(cat "$LOCK/pid" 2>/dev/null || true)"

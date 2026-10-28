@@ -4,6 +4,7 @@
 #                                       copy this host's chats into the wiki's raw/chats/ (or DEST)
 #   librarian [--config FILE] ingest [--dry-run]
 #                                       one ingest now: collect, digest, condense, merge, commit, push
+#                                       (--dry-run commits nothing but still calls the models: it costs)
 #   librarian [--config FILE] status    last run, this month's spend against the cap, the queues
 #   librarian version                   the version
 # The config is FILE, else LIBRARIAN_CONFIG, else ~/.config/librarian/librarian.toml (optional).
@@ -16,7 +17,7 @@ while [ -L "$self" ]; do
 done
 LIBRARIAN_HOME="$(cd "$(dirname "$self")/.." && pwd)"; export LIBRARIAN_HOME
 
-usage() { sed -n '2,9p' "$self" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,10p' "$self" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --config) [ $# -ge 2 ] || usage; export LIBRARIAN_CONFIG="$2"; shift 2 ;;
