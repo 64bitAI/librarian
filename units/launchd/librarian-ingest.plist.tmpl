@@ -1,33 +1,29 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  The brain's nightly ingest (scripts/brain-ingest.sh). Template: scripts/brain-ingest.sh install renders it into
-  ~/Library/LaunchAgents/<prefix>.brain-ingest.plist with SWARM_REPO set to this checkout.
-  Verify:  launchctl print gui/$(id -u)/<prefix>.brain-ingest
-  Run now: launchctl kickstart -p gui/$(id -u)/<prefix>.brain-ingest
-  (<prefix> is SWARM_UNIT_PREFIX, swarm-<name> unless the swarm's .env says otherwise)
-  Remove:  scripts/brain-ingest.sh uninstall
-  04:15 local, after the 03:30 backup. RunAtLoad is false so installing it does not fire a run.
+  The nightly ingest on macOS (librarian ingest), a launchd agent. Render it with
+    sed -e "s|@LIBRARIAN@|$(command -v librarian)|" -e "s|@CONFIG@|$HOME/.config/librarian/librarian.toml|" \
+      -e "s|@LOG@|$HOME/Library/Logs/librarian-ingest.log|" \
+      units/launchd/librarian-ingest.plist.tmpl > ~/Library/LaunchAgents/librarian.ingest.plist
+  then: launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/librarian.ingest.plist
+  Run now: launchctl kickstart -p gui/$(id -u)/librarian.ingest
+  04:15 local. RunAtLoad is false so loading it does not fire a run.
 -->
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>${SWARM_UNIT_PREFIX}.brain-ingest</string>
+    <string>librarian.ingest</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/bash</string><string>${SWARM_REPO}/scripts/job-alert.sh</string><string>run</string><string>brain-ingest</string><string>--</string>
-        <string>/bin/bash</string>
-        <string>${SWARM_REPO}/scripts/brain-ingest.sh</string>
-        <string>run</string>
+        <string>@LIBRARIAN@</string>
+        <string>--config</string>
+        <string>@CONFIG@</string>
+        <string>ingest</string>
     </array>
-    <key>WorkingDirectory</key>
-    <string>${SWARM_REPO}</string>
     <key>EnvironmentVariables</key>
     <dict>
-        <!-- launchd gives a minimal PATH; claude and git live in Homebrew or ~/.local/bin -->
+        <!-- launchd gives a minimal PATH; claude, git and python3 live in Homebrew or ~/.local/bin -->
         <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/local/bin:${HOME}/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-        <key>SWARM_NAME</key>
-        <string>${SWARM_NAME:-}</string>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
     <key>StartCalendarInterval</key>
     <dict>
@@ -36,8 +32,8 @@
     </dict>
     <key>RunAtLoad</key><false/>
     <key>StandardOutPath</key>
-    <string>${SWARM_STATE_DIR}/backups/brain-ingest.log</string>
+    <string>@LOG@</string>
     <key>StandardErrorPath</key>
-    <string>${SWARM_STATE_DIR}/backups/brain-ingest.log</string>
+    <string>@LOG@</string>
 </dict>
 </plist>

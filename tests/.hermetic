@@ -1,0 +1,16 @@
+# shellcheck shell=bash
+# Sourced by every suite after it sets TMP. Makes the run hermetic: no inherited librarian, brain or
+# swarm setting, no real API key from the environment (*_API_KEY and the Claude tokens), no Python
+# bytecode left in the checkout, and a fresh HOME, so nothing can reach a real config, wiki or Claude
+# login. Also defines eq, which records a FAIL in a file so one inside a ( ) subshell still counts.
+for _v in $(compgen -v); do
+  case "$_v" in LIBRARIAN_*|BRAIN_*|SWARM_*|*_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|CLAUDE_CONFIG_DIR|XDG_*) unset "$_v" ;; esac
+done
+unset _v
+export PYTHONDONTWRITEBYTECODE=1
+export HOME="$TMP/hermetic-home"; mkdir -p "$HOME"
+FAILF="$TMP/fails"; : > "$FAILF"
+eq() { # name expected actual
+  if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: expected [$2] got [$3]"; echo "$1" >> "$FAILF"; fi
+}
+nfails() { wc -l < "$FAILF" | tr -d ' '; }

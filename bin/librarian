@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# librarian: keeps a git wiki of what you learned with an AI assistant, from your chats and notes.
+#   librarian [--config FILE] collect [--hourly] [--to DEST [--rsh CMD]]
+#                                       copy this host's chats into the wiki's raw/chats/ (or DEST)
+#   librarian [--config FILE] ingest [--dry-run]
+#                                       one ingest now: collect, digest, condense, merge, commit, push
+#   librarian [--config FILE] status    last run, this month's spend against the cap, the queues
+#   librarian version                   the version
+# The config is FILE, else LIBRARIAN_CONFIG, else ~/.config/librarian/librarian.toml (optional).
+# See README.md for the settings and the wiki layout it expects.
+set -euo pipefail
+self="$0"
+while [ -L "$self" ]; do
+  t="$(readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
+done
+LIBRARIAN_HOME="$(cd "$(dirname "$self")/.." && pwd)"; export LIBRARIAN_HOME
+
+usage() { sed -n '2,9p' "$self" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --config) [ $# -ge 2 ] || usage; export LIBRARIAN_CONFIG="$2"; shift 2 ;;
+    --config=*) export LIBRARIAN_CONFIG="${1#--config=}"; shift ;;
+    *) break ;;
+  esac
+done
+cmd="${1:-}"; [ $# -eq 0 ] || shift
+case "$cmd" in
+  collect) exec bash "$LIBRARIAN_HOME/lib/collect.sh" "$@" ;;
+  ingest) exec bash "$LIBRARIAN_HOME/lib/ingest.sh" run "$@" ;;
+  status) exec bash "$LIBRARIAN_HOME/lib/ingest.sh" status "$@" ;;
+  version|--version) echo "librarian $(cat "$LIBRARIAN_HOME/VERSION")" ;;
+  help|-h|--help) usage ;;
+  *) usage ;;
+esac

@@ -1,18 +1,16 @@
 #!/usr/bin/env bash
-# brain_digest.py, brain_condense.py, brain_merge.py and brain-ingest.sh against a throwaway brain
-# with a bare origin. Ollama is a stub HTTP server on localhost that records each request and answers
+# lib/brain_digest.py, brain_condense.py, brain_merge.py and `librarian ingest` against a throwaway
+# wiki with a bare origin. Ollama is a stub HTTP server on localhost that records each request and answers
 # with a fixed note; claude is a stub that records its argv, prompt, cwd and environment and, for a
 # stage B merge, writes into its cwd; for a stage A condense call (--max-turns 1, no --allowedTools)
 # it answers with a fixed note and a cost (CONDENSE_MODE, CONDENSE_COST). No network beyond localhost, no real model, no real claude. Secrets are synthetic.
 set -u
-SRC="$(cd "$(dirname "$0")/../.." && pwd)"; TMP="$(mktemp -d)"
+SRC="$(cd "$(dirname "$0")/.." && pwd)"; TMP="$(mktemp -d)"
 OPID=""; trap '[ -z "$OPID" ] || kill "$OPID" 2>/dev/null; rm -rf "$TMP"' EXIT
 . "$(dirname "$0")/.hermetic"
-cp -R "$SRC/scripts" "$SRC/infra" "$SRC/gates" "$TMP/"; mkdir -p "$TMP/bin"
-# common.sh puts the real tools first on PATH: the copy under test keeps the stubs in front, so the real
-# claude can never run from here.
-sed -i.bak "s|^export PATH=\"/opt/homebrew/bin|export PATH=\"$TMP/bin:/opt/homebrew/bin|" "$TMP/scripts/common.sh"
-grep -q "^export PATH=\"$TMP/bin:" "$TMP/scripts/common.sh" || { echo "FAIL could not pin the stub PATH"; exit 1; }
+mkdir -p "$TMP/bin"
+# The stubs first on PATH, so the real claude can never run from here (librarian never changes PATH).
+export PATH="$TMP/bin:$PATH"
 
 # --- the claude stub ----------------------------------------------------------------------------------
 cat > "$TMP/bin/claude" <<'SH'
@@ -81,11 +79,14 @@ esac
 SH
 for c in docker tailscale; do printf '#!/bin/sh\nexit 1\n' > "$TMP/bin/$c"; done
 chmod +x "$TMP/bin/"*
+[ "$(command -v claude)" = "$TMP/bin/claude" ] || { echo "FAIL could not pin the stub PATH"; exit 1; }
 export CLOG="$TMP/clog"
 export ANTHROPIC_API_KEY="sk-ant-fake-parent-key-not-real"   # must never reach claude
 unset OPENAI_API_KEY BRAIN_INGEST_CHARS BRAIN_COST_CAP_USD BRAIN_RUN_MAX_USD BRAIN_MONTH BRAIN_EXCLUDE \
   BRAIN_LOCAL_URL BRAIN_LOCAL_MODEL BRAIN_LOCAL_CHUNK_TOKENS BRAIN_LOCAL_MAX_SECONDS BRAIN_CONDENSE \
   BRAIN_CONDENSE_MODEL BRAIN_CONDENSE_MIN_USD BRAIN_CONDENSE_RUN_USD BRAIN_CLAUDE_CHUNK_CHARS BRAIN_CONDENSE_CALL_MAX_USD
+# librarian has no default exclusion; these fixtures use one for a made-up employer and forge
+WORKRX='employerco|(?<![a-z0-9])wrk(?![a-z0-9])|gitea'; export BRAIN_EXCLUDE="$WORKRX"
 
 # --- the Ollama stub ----------------------------------------------------------------------------------
 OLOG="$TMP/ollama.log"; : > "$OLOG"; echo ok > "$TMP/ollama.mode"
@@ -190,7 +191,7 @@ json.dump([{"uuid": "c-1", "name": "AI chat title", "created_at": "2026-10-20T00
             "chat_messages": [{"sender": "human", "text": "WORKMARK three"}]}],
           open(os.path.join(ai, "conversations.json"), "w"))
 PY
-D="$BR/raw/digests"; DIG="$TMP/scripts/brain_digest.py"; CON="$TMP/scripts/brain_condense.py"; MRG="$TMP/scripts/brain_merge.py"
+D="$BR/raw/digests"; DIG="$SRC/lib/brain_digest.py"; CON="$SRC/lib/brain_condense.py"; MRG="$SRC/lib/brain_merge.py"
 
 # --- digests ------------------------------------------------------------------------------------------
 # A first pass with nothing excluded (as an older version would have made), then the default: the
@@ -226,9 +227,10 @@ eq "work excluded: not in the index" 0 "$(grep -c 'w1.md\|w2.md\|c-2.md' "$BR/ra
 eq "work excluded: never queued" 0 "$(python3 "$DIG" queue "$BR" 99999999 | grep -c 'w1.md\|w2.md\|c-2.md')"
 out="$(python3 "$DIG" digest "$BR")"
 eq "second pass: nothing rewritten" 0 "$(printf '%s\n' "$out" | grep -c 'written_')"
-eq "BRAIN_EXCLUDE replaces the default" 1 "$(printf '# S\n- project folder: -x-gitea-y\n\nOwner: hi\n' > "$TMP/x.md"; BRAIN_EXCLUDE='nomatch' python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import brain_digest as b; print(0 if b.excluded(b.excluder(), open(sys.argv[2]).read()) else 1)' "$TMP/scripts" "$TMP/x.md")"
+eq "BRAIN_EXCLUDE replaces the default" 1 "$(printf '# S\n- project folder: -x-gitea-y\n\nOwner: hi\n' > "$TMP/x.md"; BRAIN_EXCLUDE='nomatch' python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import brain_digest as b; print(0 if b.excluded(b.excluder(), open(sys.argv[2]).read()) else 1)' "$SRC/lib" "$TMP/x.md")"
+eq "no BRAIN_EXCLUDE: nothing is excluded" 1 "$(env -u BRAIN_EXCLUDE python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import brain_digest as b; print(0 if b.excluded(b.excluder(), open(sys.argv[2]).read()) else 1)' "$SRC/lib" "$TMP/x.md")"
 
-eq "where: claude.ai unchanged" "claude.ai account acct1" "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import brain_condense as c; print(c.where_of("raw/digests/claude-ai/acct1/c-1.md"))' "$TMP/scripts")"
+eq "where: claude.ai unchanged" "claude.ai account acct1" "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import brain_condense as c; print(c.where_of("raw/digests/claude-ai/acct1/c-1.md"))' "$SRC/lib")"
 
 m() { printf '%s' "$1" | python3 "$DIG" mask; }
 eq "masking keeps paths and folder names" "-Users-o-src-github-com-example-x /a/b/c/AcmeCo42/d/e/f/g" "$(m '-Users-o-src-github-com-example-x /a/b/c/AcmeCo42/d/e/f/g')"
@@ -277,11 +279,12 @@ eq "condense unreachable: no notes" no "$([ -d "$BR/raw/notes-condensed" ] && ec
 
 # --- the job --------------------------------------------------------------------------------------------
 unset BRAIN_LOCAL_URL
-SW="$HOME/.local/state/swarm/t"; mkdir -p "$SW"
-printf 'SWARM_PROFILE=light\nSWARM_MACHINE=m1\nSWARM_BRAIN_DIR=%s\nBRAIN_LOCAL_URL=%s\nBRAIN_INGEST_CHARS=70000\nBRAIN_CONDENSE=local\n' "$BR" "$OURL" > "$SW/.env"
-printf 'role=primary\nepoch=1\n' > "$SW/.role"
-HELD="$SW/backups/alerts-held.log"
-job() { : > "$CLOG.calls"; bash "$TMP/scripts/brain-ingest.sh" --swarm t "$@" > "$TMP/out" 2>&1; echo $?; }
+# The config: alerts are appended to HELD by the alert command; no chats to collect.
+CONF="$TMP/librarian.toml"; HELD="$TMP/alerts.log"; export LIBRARIAN_CONFIG="$CONF"
+{ printf 'wiki_dir = "%s"\nhost = "m1"\nlocal_url = "%s"\nBRAIN_INGEST_CHARS = 70000\ncondense = "local"\n' "$BR" "$OURL"
+  printf 'alert_cmd = "cat >> %s"\ncollect_from = "%s"\n' "$HELD" "$TMP/no-chats"; } > "$CONF"
+# job run [ARGS] | job status: librarian ingest [ARGS] | librarian status
+job() { local c="$1"; shift; [ "$c" = run ] && c=ingest; : > "$CLOG.calls"; bash "$SRC/bin/librarian" "$c" "$@" > "$TMP/out" 2>&1; echo $?; }
 calls() { cat "$CLOG.calls" 2>/dev/null | wc -l | tr -d ' '; }
 ingested() { python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$BR/raw/.state/ingested.json" 2>/dev/null || echo 0; }
 spent() { python3 "$DIG" cost "$BR" month; }
@@ -295,17 +298,12 @@ g commit -qm "ingest: cost reset (test)" -- state/costs.json >/dev/null || true;
 clean() { eq "$1: tree clean, nothing staged" "" "$(g -c core.quotePath=false status --porcelain | grep -v ' raw/' || true)"; }
 head0="$(g rev-parse HEAD)"
 
-# a standby never ingests
-printf 'role=standby\nepoch=1\n' > "$SW/.role"
-eq "standby: exit 0" 0 "$(job run)"; eq "standby: no claude" 0 "$(calls)"
-printf 'role=primary\nepoch=1\n' > "$SW/.role"
-
 # the local model is down: no claude, nothing spent, alert
-sed -i.bak "s|^BRAIN_LOCAL_URL=.*|BRAIN_LOCAL_URL=$DEAD|" "$SW/.env"
+sed -i.bak "s|^local_url = .*|local_url = \"$DEAD\"|" "$CONF"
 eq "local model down: non-zero exit" 1 "$(job run)"
 eq "local model down: no claude" 0 "$(calls)"
 eq "local model down: alert names the class" 1 "$(grep -c '(local-model)' "$HELD")"
-sed -i.bak "s|^BRAIN_LOCAL_URL=.*|BRAIN_LOCAL_URL=$OURL|" "$SW/.env"
+sed -i.bak "s|^local_url = .*|local_url = \"$OURL\"|" "$CONF"
 
 # I7: a live lock holds a run back until it ends or SWARM_BRAIN_LOCK_WAIT runs out (exit 75, never a
 # silent skip); a stale one is taken over
@@ -423,8 +421,8 @@ echo note > "$BR/raw/notes/n1.md"
 
 # I5: pages last committed by hand are append-only and must be named in the log entry
 printf '# Hand\nowner line\n' > "$BR/wiki/topics/hand.md"; g add wiki/topics/hand.md; g commit -qm "owner: hand page"; g push -q
-eq "I5: hand pages listed" "wiki/topics/hand.md" "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import brain_merge as m; print(" ".join(m.hand_pages(sys.argv[2])))' "$TMP/scripts" "$BR")"
-eq "baseline: a page last committed by the bootstrap (brain:) is the job's" "wiki/topics/hand.md" "$(printf '# Seed\n' > "$BR/wiki/topics/seed.md"; g add wiki/topics/seed.md; g commit -qm "brain: seed page"; g push -q; python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import brain_merge as m; print(" ".join(m.hand_pages(sys.argv[2])))' "$TMP/scripts" "$BR")"
+eq "I5: hand pages listed" "wiki/topics/hand.md" "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import brain_merge as m; print(" ".join(m.hand_pages(sys.argv[2])))' "$SRC/lib" "$BR")"
+eq "baseline: a page last committed by the bootstrap (brain:) is the job's" "wiki/topics/hand.md" "$(printf '# Seed\n' > "$BR/wiki/topics/seed.md"; g add wiki/topics/seed.md; g commit -qm "brain: seed page"; g push -q; python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import brain_merge as m; print(" ".join(m.hand_pages(sys.argv[2])))' "$SRC/lib" "$BR")"
 nskip() { python3 -c 'import json,sys; print(sum(1 for v in json.load(open(sys.argv[1])).values() if v["why"] == "hand-edit"))' "$BR/raw/.state/skipped.json" 2>/dev/null || echo 0; }
 nalert() { grep -c 'skipped a note that would change a hand-edited page (hand-edit' "$HELD" || true; }
 # several notes: refused, no alert, the next run takes one note
@@ -496,6 +494,18 @@ eq "argv: allowed writes only under wiki/, index.md, log.md" \
 eq "argv: headless, json, sonnet, dontAsk, no persistence" 5 "$(printf '%s\n' "$argv" | grep -o -- '-p \|--output-format json\|--model sonnet\|--permission-mode dontAsk\|--no-session-persistence' | wc -l | tr -d ' ')"
 eq "argv: restricted, no MCP servers" 2 "$(grep -cx -- '--restricted\|--strict-mcp-config' "$CLOG")"
 
+# --dry-run: every stage runs (the stub merges), nothing is copied back, marked, committed or pushed
+h="$(g rev-parse HEAD)"; o="$(git -C "$OR" rev-parse main)"; i="$(ingested)"; q="$(cat "$BR/raw/.state/queue-chars")"
+rc="$(job run --dry-run)"
+eq "dry run: exit 0, claude called once" "0 1" "$rc $(calls)"
+eq "dry run: no commit, no push" "$h $o" "$(g rev-parse HEAD) $(git -C "$OR" rev-parse main)"
+eq "dry run: nothing marked, the queue size kept" "$i $q" "$(ingested) $(cat "$BR/raw/.state/queue-chars")"
+eq "dry run: the wiki untouched" "" "$(g -c core.quotePath=false status --porcelain -- wiki index.md log.md)"
+eq "dry run: prints the plan" "changed index.md|changed log.md|1" "$(grep -E '^(new|changed) ' "$TMP/out" | grep -v '^new wiki/' | paste -sd'|' -)|$(grep -c '^changed=2 new=0$\|^changed=[0-9]* new=[0-9]*$' "$TMP/out")"
+eq "dry run: says what it would commit" 1 "$(grep -c 'dry run: would commit "ingest: [0-9-]* [0-9]* notes" and push' "$TMP/out")"
+eq "dry run: a usage error for anything else" 2 "$(job run --dry)"
+g checkout -q -- state/costs.json   # the dry run's spend, left uncommitted, is dropped here so the counts below hold
+
 # the next run takes more; status reports
 job run >/dev/null
 eq "next run: more marked" 1 "$(ingested | awk '{print ($1 > 1)}')"
@@ -561,17 +571,17 @@ zero_costs
 # the cap for one month: BRAIN_COST_CAP_<YYYY>_<MM> in .env beats BRAIN_COST_CAP_USD
 reset_notes
 BRAIN_MONTH=2031-02 python3 "$DIG" cost "$BR" add 9.0 ingest 0
-printf 'BRAIN_COST_CAP_2031_02=20\n' >> "$SW/.env"
+printf 'BRAIN_COST_CAP_2031_02 = 20\n' >> "$CONF"
 BRAIN_MONTH=2031-02 CLAUDE_MODE=unparsed job run >/dev/null
 eq "month cap: stage B budget from the month's cap (min 2, 20 - 9 - 0.25)" "2.00" "$(grep -A1 -x -- '--max-budget-usd' "$CLOG" | tail -1)"
 BRAIN_MONTH=2031-02 job status >/dev/null
 eq "month cap: status shows it" 1 "$(grep -c 'this month (2031-02): \$11.00 of \$20' "$TMP/out")"
 BRAIN_MONTH=2031-03 job status >/dev/null
 eq "month cap: other months keep BRAIN_COST_CAP_USD" 1 "$(grep -c 'this month (2031-03): \$0.00 of \$10 ' "$TMP/out")"
-sed -i.bak '/^BRAIN_COST_CAP_2031_02=/d' "$SW/.env"
+sed -i.bak '/^BRAIN_COST_CAP_2031_02 /d' "$CONF"
 
 # the job with Claude condensing, end to end: stage A spend committed, then the merge
-sed -i.bak "s|^BRAIN_CONDENSE=.*|BRAIN_CONDENSE=auto|; s|^BRAIN_LOCAL_URL=.*|BRAIN_LOCAL_URL=$DEAD|" "$SW/.env"
+sed -i.bak "s|^condense = .*|condense = \"auto\"|; s|^local_url = .*|local_url = \"$DEAD\"|" "$CONF"
 reset_notes; rm -f "$BR/raw/.state/ingested.json" "$BR/raw/.state/queue-chars"; head2="$(g rev-parse HEAD)"; NP="$(npend)"
 eq "job, claude condense: exit 0 with Ollama down" 0 "$(job run)"
 eq "job, claude condense: stage A calls, one merge" "$NP 1" "$(ccalls) $(calls)"
@@ -585,7 +595,7 @@ eq "job, claude condense failing: refused" 1 "$(CONDENSE_MODE=fail job run)"
 eq "job, claude condense failing: no merge, alert names the class" "0 1" "$(calls) $(tail -1 "$HELD" | grep -c '(condense-claude)')"
 eq "job, claude condense failing: the spend committed" 1 "$(g log -1 --format=%s | grep -c '^ingest: cost .* (condense)$')"
 clean "job, claude condense failing"
-sed -i.bak "s|^BRAIN_CONDENSE=.*|BRAIN_CONDENSE=local|; s|^BRAIN_LOCAL_URL=.*|BRAIN_LOCAL_URL=$OURL|" "$SW/.env"
+sed -i.bak "s|^condense = .*|condense = \"local\"|; s|^local_url = .*|local_url = \"$OURL\"|" "$CONF"
 zero_costs
 
 # --- owner notes: raw/notes, committed, never condensed, merged before any chat --------------------------
@@ -667,7 +677,7 @@ g add raw/notes/link.md raw/notes/linkdir raw/notes/big.md "raw/notes/bad
 name.md"; g commit -qm "note: odd ones"; g push -q
 out="$(python3 "$DIG" notes "$BR" check)"
 eq "symlinks: never listed, never queued" "0 0" "$(printf '%s\n' "$out" | grep -c link) $(python3 "$CON" queue "$BR" 999999999 | grep -c 'link\|inner')"
-eq "symlinks: a path through a linked folder is refused" "False False" "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import brain_digest as b; print(b.inside(sys.argv[2], "raw/notes/linkdir/inner.md"), b.inside(sys.argv[2], "raw/notes/link.md"))' "$TMP/scripts" "$BR")"
+eq "symlinks: a path through a linked folder is refused" "False False" "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import brain_digest as b; print(b.inside(sys.argv[2], "raw/notes/linkdir/inner.md"), b.inside(sys.argv[2], "raw/notes/link.md"))' "$SRC/lib" "$BR")"
 eq "a name with a newline: skipped, shown safely" 1 "$(printf '%s\n' "$out" | grep -c 'skipped bad-name: raw/notes/bad?name.md')"
 eq "a note over 20,000 characters: skipped, split it" 1 "$(printf '%s\n' "$out" | grep -c 'skipped too-large: raw/notes/big.md (split it into notes under 20000 characters)')"
 eq "odd notes: nothing left to queue" 0 "$(python3 "$DIG" notes "$BR" pending | awk '{print $1}')"
@@ -689,9 +699,9 @@ python3 "$MRG" rollback "$BR" "$TMP/created" >/dev/null
 clean "rollback helper"
 
 # the unit: a two-hour ceiling
-eq "systemd: TimeoutStartSec=2h" 1 "$(grep -c '^TimeoutStartSec=2h$' "$TMP/infra/systemd/swarm-brain-ingest.service.tmpl")"
+eq "systemd: TimeoutStartSec=2h" 1 "$(grep -c '^TimeoutStartSec=2h$' "$SRC/units/systemd/librarian-ingest.service.tmpl")"
 
-# --- the gate (gates/brain-ingest.sh): no new chat and no digest due, so Claude never starts ------------
+# --- the gate (lib/gate.sh): no new chat and no digest due, so Claude never starts ------------
 python3 "$DIG" digest "$BR" >/dev/null; python3 "$DIG" queue "$BR" 999999999 | python3 "$DIG" mark "$BR" >/dev/null
 eq "fresh: nothing new after a digest pass" 0 "$(python3 "$DIG" fresh "$BR")"
 eq "pending: nothing due" "0 0" "$(python3 "$DIG" pending "$BR")"
@@ -704,47 +714,48 @@ clean "gated"
 NEW="$BR/raw/chats/claude-code/h1/-proj-e/n1.jsonl"; mkdir -p "$(dirname "$NEW")"
 printf '%s\n' '{"type":"user","timestamp":"2026-10-03T09:00:00Z","sessionId":"n1","cwd":"/home/o/x","message":{"role":"user","content":"hello"}}' > "$NEW"
 eq "fresh: a new chat counts" 1 "$(python3 "$DIG" fresh "$BR")"
-eq "gate: a new chat opens it" 0 "$(bash "$TMP/gates/brain-ingest.sh" "$BR" >/dev/null; echo $?)"
+eq "gate: a new chat opens it" 0 "$(bash "$SRC/lib/gate.sh" "$BR" >/dev/null; echo $?)"
 printf '%s\n' '{"type":"user","timestamp":"2026-10-03T09:01:00Z","sessionId":"n1","message":{"role":"user","content":"more"}}' >> "$NEW"
 python3 "$DIG" digest "$BR" >/dev/null
 eq "fresh: none once digested" 0 "$(python3 "$DIG" fresh "$BR")"
-eq "gate: a digest due opens it" 0 "$(bash "$TMP/gates/brain-ingest.sh" "$BR" >/dev/null; echo $?)"
-# the swarm's own gate beats the repo's
-mkdir -p "$SW/gates"; printf 'echo "owner pause"\nexit 10\n' > "$SW/gates/brain-ingest"
-eq "swarm gate: exit 0" 0 "$(gated)"
-eq "swarm gate: its reason, no claude" "1 0" "$(grep -c '^[0-9T:-]* gated: owner pause$' "$BR/raw/.state/last-run") $(grep -c . "$CLOG.forbidden")"
+eq "gate: a digest due opens it" 0 "$(bash "$SRC/lib/gate.sh" "$BR" >/dev/null; echo $?)"
+# gate_cmd beats the built-in gate
+SWG="$TMP/gates/brain-ingest"; export LIBRARIAN_GATE_CMD="$SWG"
+mkdir -p "$TMP/gates"; printf 'echo "owner pause"\nexit 10\n' > "$SWG"
+eq "gate_cmd: exit 0" 0 "$(gated)"
+eq "gate_cmd: its reason, no claude" "1 0" "$(grep -c '^[0-9T:-]* gated: owner pause$' "$BR/raw/.state/last-run") $(grep -c . "$CLOG.forbidden")"
 python3 "$DIG" queue "$BR" 999999999 | python3 "$DIG" mark "$BR" >/dev/null
-printf 'exit 0\n' > "$SW/gates/brain-ingest"
-eq "swarm gate says run: the job runs" "0 1" "$(gated) $(grep -c ' ok 0 notes$' "$BR/raw/.state/last-run")"
-printf 'echo broken >&2\nexit 7\n' > "$SW/gates/brain-ingest"
+printf 'exit 0\n' > "$SWG"
+eq "gate_cmd says run: the job runs" "0 1" "$(gated) $(grep -c ' ok 0 notes$' "$BR/raw/.state/last-run")"
+printf 'echo broken >&2\nexit 7\n' > "$SWG"
 eq "broken gate: the job runs anyway" "0 1" "$(gated) $(grep -c ' ok 0 notes$' "$BR/raw/.state/last-run")"
 eq "broken gate: warned, its stderr in the log" "1 1" "$(grep -c 'gate .*brain-ingest failed (exit 7); running anyway' "$TMP/out") $(grep -cx broken "$TMP/out")"
-rm -rf "$SW/gates"
+rm -rf "$TMP/gates"; unset LIBRARIAN_GATE_CMD
 eq "gate: the log has counts only" 0 "$(grep -c 'hello\|more' "$TMP/out")"
 # a quiet night with one committed owner note waiting: the gate opens; once it is ingested, gated again
-eq "gate: quiet night, no note: gated" 10 "$(bash "$TMP/gates/brain-ingest.sh" "$BR" >/dev/null; echo $?)"
+eq "gate: quiet night, no note: gated" 10 "$(bash "$SRC/lib/gate.sh" "$BR" >/dev/null; echo $?)"
 printf '# Quiet\n- a note on a quiet night\n' > "$BR/raw/notes/quiet.md"
-eq "gate: an uncommitted note keeps it shut" 10 "$(bash "$TMP/gates/brain-ingest.sh" "$BR" >/dev/null; echo $?)"
+eq "gate: an uncommitted note keeps it shut" 10 "$(bash "$SRC/lib/gate.sh" "$BR" >/dev/null; echo $?)"
 g add raw/notes/quiet.md; g commit -qm "note: quiet"; g push -q
-eq "gate: a committed note waiting opens it" 0 "$(bash "$TMP/gates/brain-ingest.sh" "$BR" >/dev/null; echo $?)"
+eq "gate: a committed note waiting opens it" 0 "$(bash "$SRC/lib/gate.sh" "$BR" >/dev/null; echo $?)"
 echo 1 > "$BR/raw/.state/queue-chars"
 eq "gate: the quiet night's run merges the note" "0 1" "$(job run) $(grep -c '^- notes/_raw-notes/quiet.md ' "$CLOG.prompt")"
-eq "gate: ingested, it shuts again" 10 "$(bash "$TMP/gates/brain-ingest.sh" "$BR" >/dev/null; echo $?)"
+eq "gate: ingested, it shuts again" 10 "$(bash "$SRC/lib/gate.sh" "$BR" >/dev/null; echo $?)"
 # a note pushed from another clone: the gate fetches and sees it on the upstream branch
 git clone -q -b main "$OR" "$TMP/brain3"
 printf '# Elsewhere\n- written on another machine\n' > "$TMP/brain3/raw/notes/elsewhere.md"
 git -C "$TMP/brain3" add raw/notes/elsewhere.md; git -C "$TMP/brain3" commit -qm "note: elsewhere"; git -C "$TMP/brain3" push -q
-eq "gate: a note pushed elsewhere opens it" 0 "$(bash "$TMP/gates/brain-ingest.sh" "$BR" >/dev/null; echo $?)"
+eq "gate: a note pushed elsewhere opens it" 0 "$(bash "$SRC/lib/gate.sh" "$BR" >/dev/null; echo $?)"
 eq "gate: ... and the work tree is untouched" no "$([ -e "$BR/raw/notes/elsewhere.md" ] && echo yes || echo no)"
 echo 1 > "$BR/raw/.state/queue-chars"
 eq "gate: that night's run pulls and merges it" "0 1" "$(job run) $(grep -c '^- notes/_raw-notes/elsewhere.md ' "$CLOG.prompt")"
-eq "gate: then it shuts" 10 "$(bash "$TMP/gates/brain-ingest.sh" "$BR" >/dev/null; echo $?)"
+eq "gate: then it shuts" 10 "$(bash "$SRC/lib/gate.sh" "$BR" >/dev/null; echo $?)"
 g remote set-url origin "$TMP/no-such-origin.git"
-eq "gate: an unreachable remote fails open to what it has" 10 "$(bash "$TMP/gates/brain-ingest.sh" "$BR" >/dev/null 2>&1; echo $?)"
+eq "gate: an unreachable remote fails open to what it has" 10 "$(bash "$SRC/lib/gate.sh" "$BR" >/dev/null 2>&1; echo $?)"
 g remote set-url origin "$OR"
 
 # --- the pull and the pushes rebase: a report pushed from another clone is not lost ---------------------
-rm -f "$SW/gates/brain-ingest"; export BRAIN_PUSH_RETRY_SLEEP=0
+export BRAIN_PUSH_RETRY_SLEEP=0
 SECOND="$TMP/second"; export SECOND
 git clone -q -b main "$OR" "$SECOND"
 sg() { git -C "$SECOND" -c user.email=r@r -c user.name=r "$@"; }
@@ -778,10 +789,14 @@ eq "report mid-run: no rebase in progress" 1 "$(norebase)"
 eq "report mid-run: no push-failed alert" 0 "$(grep -c 'push failed' "$HELD")"
 clean "report mid-run"
 
-# no brain configured
-grep -v '^SWARM_BRAIN_DIR=' "$SW/.env" > "$SW/.env.new" && mv "$SW/.env.new" "$SW/.env"
-eq "no SWARM_BRAIN_DIR: refused" 1 "$(job run)"
-eq "... saying so" 1 "$(grep -c 'SWARM_BRAIN_DIR is not set' "$TMP/out")"
+# no wiki configured
+grep -v '^wiki_dir = ' "$CONF" > "$CONF.new" && mv "$CONF.new" "$CONF"
+eq "no wiki_dir: refused" 1 "$(job run)"
+eq "... saying so" 1 "$(grep -c 'no wiki: set wiki_dir' "$TMP/out")"
+eq "SWARM_BRAIN_DIR still names the wiki" 0 "$(SWARM_BRAIN_DIR="$BR" job status)"
+eq "a bad config line is refused, naming the line" "2 1" "$(printf 'wiki_dir "x"\n' >> "$CONF"; job status) $(grep -c 'librarian.toml line [0-9]*: expected key = value' "$TMP/out")"
+eq "an unknown setting is refused" "2 1" "$(printf 'wiki_dirr = "x"\n' > "$CONF"; job status) $(grep -c 'unknown setting wiki_dirr' "$TMP/out")"
+eq "an explicit config that is missing is refused" 2 "$(LIBRARIAN_CONFIG="$TMP/none.toml" job status)"
 
 # --- a subagent's type (its agent-*.meta.json agentType) is matched by the digest pass too ---------
 B3="$TMP/brain-types"; C3="$B3/raw/chats/claude-code/h1/-Users-o-src-personal"
@@ -793,7 +808,7 @@ done
 D3="$B3/raw/digests/claude-code/h1/-Users-o-src-personal"
 dg() { find "$D3" -type f -name '*.md' 2>/dev/null | sed 's|.*/||' | LC_ALL=C sort | tr '\n' ' '; }
 python3 "$DIG" digest "$B3" >/dev/null
-eq "digest: an wrk subagent is never digested; food, therapy (default) and no meta are" "s-f-agent-1.md s-n-agent-1.md s-t-agent-1.md " "$(dg)"
+eq "digest: a wrk subagent is never digested; food, therapy (default) and no meta are" "s-f-agent-1.md s-n-agent-1.md s-t-agent-1.md " "$(dg)"
 BRAIN_EXCLUDE='employerco|(?<![a-z0-9])wrk(?![a-z0-9])|gitea|therapy|legal' python3 "$DIG" digest "$B3" >/dev/null
 eq "digest: BRAIN_EXCLUDE with therapy|legal drops the therapy subagent's digest; food stays" "s-f-agent-1.md s-n-agent-1.md " "$(dg)"
 

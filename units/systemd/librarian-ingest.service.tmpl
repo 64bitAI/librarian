@@ -1,16 +1,14 @@
-# The brain's nightly ingest on Linux (scripts/brain-ingest.sh). Template: scripts/brain-ingest.sh install.
+# The nightly ingest on Linux (librarian ingest), a systemd user service. Render it with
+#   sed -e "s|@LIBRARIAN@|$(command -v librarian)|" -e "s|@CONFIG@|$HOME/.config/librarian/librarian.toml|" \
+#     units/systemd/librarian-ingest.service.tmpl > ~/.config/systemd/user/librarian-ingest.service
+# copy librarian-ingest.timer next to it, then: systemctl --user daemon-reload &&
+# systemctl --user enable --now librarian-ingest.timer (and loginctl enable-linger to run logged out).
 [Unit]
-Description=Swarm brain ingest [${SWARM_UNIT_PREFIX}]
+Description=librarian ingest
 
 [Service]
 Type=oneshot
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-Environment=SWARM_NAME=${SWARM_NAME:-}
-ExecStart=/bin/bash ${SWARM_REPO}/scripts/brain-ingest.sh run
-# A run killed by its timeout or a signal never reaches its own alerts; this says so, once
-# (scripts/job-alert.sh). The "-" keeps a failed alert from failing the unit.
-ExecStopPost=-/bin/bash ${SWARM_REPO}/scripts/job-alert.sh unit brain-ingest
+ExecStart=@LIBRARIAN@ --config @CONFIG@ ingest
 # Stage A is bounded by BRAIN_LOCAL_MAX_SECONDS (an hour); the whole run never past two.
 TimeoutStartSec=2h
-StandardOutput=append:${SWARM_STATE_DIR}/backups/brain-ingest.log
-StandardError=append:${SWARM_STATE_DIR}/backups/brain-ingest.log

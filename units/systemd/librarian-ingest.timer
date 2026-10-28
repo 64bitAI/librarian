@@ -1,7 +1,7 @@
-# The brain's nightly ingest at 04:15, after the 03:30 backup; Persistent catches a run missed
-# while the machine was off. Installed by scripts/brain-ingest.sh install.
+# The nightly ingest at 04:15; Persistent catches a run missed while the machine was off.
+# Goes next to librarian-ingest.service (see its header).
 [Unit]
-Description=Swarm brain ingest at 04:15
+Description=librarian ingest at 04:15
 
 [Timer]
 OnCalendar=*-*-* 04:15:00

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage B of the brain's ingest, the file side (stdlib only; called by brain-ingest.sh). Claude works
+"""Stage B of the brain's ingest, the file side (stdlib only; called by lib/ingest.sh). Claude works
 in a temp dir that holds only wiki/, index.md, log.md, CLAUDE.md and tonight's condensed notes;
 these steps build that dir, check what came back, and copy back wiki/, index.md and log.md only.
 
@@ -18,6 +18,8 @@ these steps build that dir, check what came back, and copy back wiki/, index.md 
                                               log-rewritten, hand-edit, secret-in-wiki
   brain_merge.py apply BRAIN WORK CREATED     copy changed and new files back; CREATED gets the new
                                               ones (NUL-separated) for a rollback; prints counts
+  brain_merge.py plan BRAIN WORK              what apply would copy back, without copying: one
+                                              "new PATH" or "changed PATH" line each, then the counts
   brain_merge.py rollback BRAIN CREATED       tracked wiki/, index.md, log.md back to HEAD; the files
                                               in CREATED removed
 
@@ -255,6 +257,25 @@ def cmd_apply(brain, work, created_file):
     print("changed=%d new=%d" % (changed, new))
 
 
+def cmd_plan(brain, work):
+    """What apply would do, without doing it: one line per file ("new PATH" or "changed PATH"),
+    then the counts line apply prints."""
+    changed = new = 0
+    for rel in walk(work, "wiki") + list(BACK):
+        src, dst = os.path.join(work, rel), os.path.join(brain, rel)
+        if not os.path.exists(src):
+            continue
+        if os.path.exists(dst):
+            if filecmp.cmp(src, dst, shallow=False):
+                continue
+            changed += 1
+            print("changed %s" % rel)
+        else:
+            new += 1
+            print("new %s" % rel)
+    print("changed=%d new=%d" % (changed, new))
+
+
 def cmd_rollback(brain, created_file):
     subprocess.run(["git", "-C", brain, "reset", "-q", "--", "wiki", "index.md", "log.md"], capture_output=True)
     subprocess.run(["git", "-C", brain, "checkout", "-q", "--", "wiki", "index.md", "log.md"], capture_output=True)
@@ -285,6 +306,8 @@ def main(argv):
         print(cmd_check(brain, argv[3], argv[4], argv[5]))
     elif op == "apply":
         cmd_apply(brain, argv[3], argv[4])
+    elif op == "plan":
+        cmd_plan(brain, argv[3])
     elif op == "rollback":
         cmd_rollback(brain, argv[3])
     else:

@@ -1,24 +1,20 @@
 #!/usr/bin/env bash
-# brain-collect.sh (and brain_digest.py collect-list) against synthetic chat trees in a throwaway
-# HOME: work folders and temp folders never reach the
-# list; the primary copies into its own brain, the standby pushes to the primary's (asked of it).
-# rsync is a stub that records its argv and the --files-from list, then runs the real rsync with a
-# remote destination (host:/path) mapped to $TMP/remote/path; ssh is a stub answering stack-role.sh.
-# No network. Fixture chats are synthetic.
+# `librarian collect` (and brain_digest.py collect-list) against synthetic chat trees in a throwaway
+# HOME: work folders and temp folders never reach the list; collect copies into the wiki, or into
+# another wiki with --to (a local path, or host:/path over --rsh). rsync is a stub that records its
+# argv and the --files-from list, then runs the real rsync with a remote destination (host:/path)
+# mapped to $TMP/remote/path. No network. Fixture chats are synthetic.
 set -u
-SRC="$(cd "$(dirname "$0")/../.." && pwd)"; TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+SRC="$(cd "$(dirname "$0")/.." && pwd)"; TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 REAL_RSYNC="$(PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin command -v rsync)"
 . "$(dirname "$0")/.hermetic"
-cp -R "$SRC/scripts" "$SRC/infra" "$SRC/gates" "$TMP/"; mkdir -p "$TMP/bin" "$TMP/remote"
-sed -i.bak "s|^export PATH=\"/opt/homebrew/bin|export PATH=\"$TMP/bin:/opt/homebrew/bin|" "$TMP/scripts/common.sh"
-grep -q "^export PATH=\"$TMP/bin:" "$TMP/scripts/common.sh" || { echo "FAIL could not pin the stub PATH"; exit 1; }
-export RLOG="$TMP/rlog" SLOG="$TMP/slog" REAL_RSYNC REMOTE="$TMP/remote" TMPDIR="$TMP/tmpdir"; mkdir -p "$TMPDIR"
+mkdir -p "$TMP/bin" "$TMP/remote"
+export PATH="$TMP/bin:$PATH"
+export RLOG="$TMP/rlog" REAL_RSYNC REMOTE="$TMP/remote" TMPDIR="$TMP/tmpdir"; mkdir -p "$TMPDIR"
 
 cat > "$TMP/bin/rsync" <<'SH'
 #!/bin/bash
 printf '%s\n' "$*" >> "$RLOG"
-# The standby-sync pass must have let go of its lock before a long push.
-[ ! -d "$SWARM_STATE_DIR/standby/.lock" ] || printf '%s\n' "$*" >> "$RLOG.lock"
 args=(); skip=""
 for a in "$@"; do
   if [ -n "$skip" ]; then skip=""; continue; fi
@@ -32,28 +28,14 @@ done
 [ -z "${RSYNC_FAIL:-}" ] || exit 23
 exec "$REAL_RSYNC" "${args[@]}"
 SH
-cat > "$TMP/bin/ssh" <<'SH'
-#!/bin/bash
-c="${*: -1}"; printf '%s\n' "$c" >> "$SLOG"
-[ -z "${SSH_DOWN:-}" ] || exit 255
-case "$c" in
-  *"stack-role.sh identity"*) exit 0 ;;
-  *"stack-role.sh brain"*) [ -z "${PEER_OLD:-}" ] || { echo "usage: stack-role.sh ..." >&2; exit 2; }; echo "${PEER_BRAIN:-/srv/brain}" ;;
-  *"stack-role.sh dir"*) echo /srv/state ;;
-  *git-upload-pack*) [ -z "${SSH_HANG:-}" ] || sleep 20; exit 128 ;;
-  *) exit 0 ;;
-esac
-SH
-for c in docker curl; do printf '#!/bin/sh\nexit 1\n' > "$TMP/bin/$c"; done
-# shellcheck disable=SC2016  # TS_NET is the stub's, expanded when it runs
-printf '#!/bin/sh\necho "{\\"BackendState\\":\\"Running\\",\\"MagicDNSSuffix\\":\\"${TS_NET:-ts.example}\\"}"\n' > "$TMP/bin/tailscale"
+printf '#!/bin/sh\nexit 97\n' > "$TMP/bin/claude"   # never called here
 chmod +x "$TMP/bin/"*
 
-# --- fixtures: the personal swarm's Claude home is under the hermetic HOME ----
-S="$HOME/.local/state/swarm/personal"; mkdir -p "$S"
+# --- fixtures: the Claude home is under the hermetic HOME -----------------------------------------
 BR="$TMP/brain"; mkdir -p "$BR/raw/chats"
-setenv() { printf 'SWARM_MACHINE=host1\nSWARM_BRAIN_DIR=%s\n' "$BR" > "$S/.env"; [ $# = 0 ] || printf '%s\n' "$@" >> "$S/.env"; }
-setrole() { printf 'role=%s\nepoch=3\n' "$1" > "$S/.role"; }
+CONF="$TMP/librarian.toml"; export LIBRARIAN_CONFIG="$CONF"
+SD="$TMP/state"
+setconf() { printf 'wiki_dir = "%s"\nhost = "host1"\nstate_dir = "%s"\nexclude = '"'%s'"'\n' "$BR" "$SD" 'employerco|(?<![a-z0-9])wrk(?![a-z0-9])' > "$CONF"; }
 cc() { # cc FOLDER FILE CWD [TITLE]: a Claude Code session whose second record carries CWD
   local d="$HOME/.claude/projects/$1"; mkdir -p "$(dirname "$d/$2")"
   {
@@ -89,182 +71,103 @@ claude-code/host1/-Users-o-src-personal/s1/subagents/agent-a.jsonl
 claude-code/host1/-Users-o-src-personal/s8.jsonl"
 tree() { (cd "$1" && find . -type f | sed 's|^\./||' | LC_ALL=C sort); }
 mtime() { python3 -c 'import os,sys; print(int(os.stat(sys.argv[1]).st_mtime))' "$1"; }
-run() { : > "$RLOG"; : > "$SLOG"; rm -f "$RLOG.list" "$RLOG.lock"; bash "$TMP/scripts/brain-collect.sh" --swarm personal "$@" 2>&1; echo "rc=$?"; }
+run() { : > "$RLOG"; rm -f "$RLOG.list"; bash "$SRC/bin/librarian" collect "$@" 2>&1; echo "rc=$?"; }
 lines() { printf '%s\n' "$1" | grep -vc '^rc='; }
+DIG="$SRC/lib/brain_digest.py"; export BRAIN_EXCLUDE='employerco|(?<![a-z0-9])wrk(?![a-z0-9])'
 
 # --- the list itself -------------------------------------------------------------------------------
-L="$(python3 "$TMP/scripts/brain_digest.py" collect-list host1 "" "$HOME/.claude/projects" | LC_ALL=C sort)"
-eq "collect-list: only personal chats, in the brain's layout" "$WANT" "$L"
-L2="$(BRAIN_EXCLUDE=mixed python3 "$TMP/scripts/brain_digest.py" collect-list host1 "" "$HOME/.claude/projects" | LC_ALL=C sort)"
-eq "collect-list: BRAIN_EXCLUDE replaces the default" "$({ printf '%s\n' "$WANT" | grep claude-code | grep -v mixed
+L="$(python3 "$DIG" collect-list host1 "" "$HOME/.claude/projects" | LC_ALL=C sort)"
+eq "collect-list: only personal chats, in the wiki's layout" "$WANT" "$L"
+L2="$(BRAIN_EXCLUDE=mixed python3 "$DIG" collect-list host1 "" "$HOME/.claude/projects" | LC_ALL=C sort)"
+eq "collect-list: BRAIN_EXCLUDE is the whole rule" "$({ printf '%s\n' "$WANT" | grep claude-code | grep -v mixed
   echo claude-code/host1/-Users-o-src-employerco-app/w1.jsonl; } | LC_ALL=C sort)" "$L2"
-eq "collect-list: missing sources are skipped" "" "$(python3 "$TMP/scripts/brain_digest.py" collect-list host1 "" "$TMP/none")"
+eq "collect-list: no BRAIN_EXCLUDE excludes no work folder" 1 "$(env -u BRAIN_EXCLUDE python3 "$DIG" collect-list host1 "" "$HOME/.claude/projects" | grep -c employerco-app/w1.jsonl)"
+eq "collect-list: missing sources are skipped" "" "$(python3 "$DIG" collect-list host1 "" "$TMP/none")"
 
-# A subagent's type (its sibling agent-*.meta.json agentType) is matched too: an wrk subagent run from
+# A subagent's type (its sibling agent-*.meta.json agentType) is matched too: a wrk subagent run from
 # a personal project stays here; therapy and legal stay when BRAIN_EXCLUDE names them; food travels
 # with its meta (the digest pass checks the type again). A subagent with no meta is kept as before.
 SA="$HOME/.claude/projects/-Users-o-src-personal/s1/subagents"
 for a in v:wrk:wrk-voice t:therapy:therapy l:legal:legal f:food:food; do
   cp "$SA/agent-a.jsonl" "$SA/agent-${a%%:*}.jsonl"; printf '{"agentType":"%s","description":"x"}\n' "${a#*:}" > "$SA/agent-${a%%:*}.meta.json"
 done
-L="$(python3 "$TMP/scripts/brain_digest.py" collect-list host1 "" "$HOME/.claude/projects" | grep /subagents/ | LC_ALL=C sort | tr '\n' ' ')"
-eq "collect-list: an wrk subagent stays, others travel with their meta" "$(printf '%s ' \
+L="$(python3 "$DIG" collect-list host1 "" "$HOME/.claude/projects" | grep /subagents/ | LC_ALL=C sort | tr '\n' ' ')"
+eq "collect-list: a wrk subagent stays, others travel with their meta" "$(printf '%s ' \
   claude-code/host1/-Users-o-src-personal/s1/subagents/agent-a.jsonl \
   claude-code/host1/-Users-o-src-personal/s1/subagents/agent-f.jsonl claude-code/host1/-Users-o-src-personal/s1/subagents/agent-f.meta.json \
   claude-code/host1/-Users-o-src-personal/s1/subagents/agent-l.jsonl claude-code/host1/-Users-o-src-personal/s1/subagents/agent-l.meta.json \
   claude-code/host1/-Users-o-src-personal/s1/subagents/agent-t.jsonl claude-code/host1/-Users-o-src-personal/s1/subagents/agent-t.meta.json)" "$L"
-L="$(BRAIN_EXCLUDE='employerco|(?<![a-z0-9])wrk(?![a-z0-9])|gitea|therapy|legal' python3 "$TMP/scripts/brain_digest.py" collect-list host1 "" "$HOME/.claude/projects" | grep /subagents/ | sed 's|.*/||' | LC_ALL=C sort | tr '\n' ' ')"
+L="$(BRAIN_EXCLUDE='employerco|(?<![a-z0-9])wrk(?![a-z0-9])|therapy|legal' python3 "$DIG" collect-list host1 "" "$HOME/.claude/projects" | grep /subagents/ | sed 's|.*/||' | LC_ALL=C sort | tr '\n' ' ')"
 eq "collect-list: BRAIN_EXCLUDE with therapy|legal keeps those subagents here; food still travels" "agent-a.jsonl agent-f.jsonl agent-f.meta.json " "$L"
 printf 'not json' > "$SA/agent-f.meta.json"
-eq "collect-list: an unreadable meta keeps the subagent" 1 "$(python3 "$TMP/scripts/brain_digest.py" collect-list host1 "" "$HOME/.claude/projects" | grep -c '/agent-f.jsonl$')"
+eq "collect-list: an unreadable meta keeps the subagent" 1 "$(python3 "$DIG" collect-list host1 "" "$HOME/.claude/projects" | grep -c '/agent-f.jsonl$')"
 rm -f "$SA"/agent-[vtlf].*
+unset BRAIN_EXCLUDE   # from here the config's exclude applies
 
-# --- the primary: a local copy into its own brain --------------------------------------------------
-setenv; setrole primary
-out="$(run run)"
-eq "primary: exit 0" 1 "$(printf '%s\n' "$out" | grep -c '^rc=0$')"
-eq "primary: one line, the count" "1 1" "$(lines "$out") $(printf '%s\n' "$out" | grep -c 'collected 4 chat files into the brain')"
-eq "primary: exactly the listed files arrive" "$WANT" "$(tree "$BR/raw/chats")"
-eq "primary: the list handed to rsync" "$WANT" "$(LC_ALL=C sort "$RLOG.list")"
-eq "primary: a session keeps its mtime" "$(mtime "$HOME/.claude/projects/-Users-o-src-personal/s1.jsonl")" "$(mtime "$BR/raw/chats/claude-code/host1/-Users-o-src-personal/s1.jsonl")"
-eq "primary: files arrive, not links" 0 "$(find "$BR/raw/chats" -type l | wc -l | tr -d ' ')"
-eq "primary: rsync -aL, never --delete" "1 0" "$(grep -cE -- '(^| )-aL( |$)' "$RLOG") $(grep -c -- '--delete' "$RLOG")"
-eq "primary: no ssh" 0 "$(wc -l < "$SLOG" | tr -d ' ')"
-eq "primary: stamp written" 1 "$([ -s "$S/.brain-collected" ] && echo 1 || echo 0)"
+# --- into this host's wiki ---------------------------------------------------------------------------
+setconf
+out="$(run)"
+eq "local: exit 0" 1 "$(printf '%s\n' "$out" | grep -c '^rc=0$')"
+eq "local: one line, the count" "1 1" "$(lines "$out") $(printf '%s\n' "$out" | grep -c 'collected 4 chat files into the brain')"
+eq "local: exactly the listed files arrive" "$WANT" "$(tree "$BR/raw/chats")"
+eq "local: the list handed to rsync" "$WANT" "$(LC_ALL=C sort "$RLOG.list")"
+eq "local: a session keeps its mtime" "$(mtime "$HOME/.claude/projects/-Users-o-src-personal/s1.jsonl")" "$(mtime "$BR/raw/chats/claude-code/host1/-Users-o-src-personal/s1.jsonl")"
+eq "local: files arrive, not links" 0 "$(find "$BR/raw/chats" -type l | wc -l | tr -d ' ')"
+eq "local: rsync -aL, never --delete" "1 0" "$(grep -cE -- '(^| )-aL( |$)' "$RLOG") $(grep -c -- '--delete' "$RLOG")"
+eq "local: stamp written in state_dir" 1 "$([ -s "$SD/.brain-collected" ] && echo 1 || echo 0)"
 eq "no stage left behind" "" "$(ls -A "$TMPDIR")"
-# A copy already there is never removed (no --delete), and an older copy is replaced.
+eq "no lock left behind" 0 "$([ -d "$SD/.brain-collect.lock" ] && echo 1 || echo 0)"
+# A copy already there is never removed (no --delete).
 echo keep > "$BR/raw/chats/claude-code/host1/-Users-o-src-personal/gone.jsonl"
-run run >/dev/null; eq "primary: a chat gone at the source stays in the brain" 1 "$([ -f "$BR/raw/chats/claude-code/host1/-Users-o-src-personal/gone.jsonl" ] && echo 1 || echo 0)"
-
-# The swarm's own Claude config, never one the calling session exported (a work session's).
+run >/dev/null; eq "local: a chat gone at the source stays in the wiki" 1 "$([ -f "$BR/raw/chats/claude-code/host1/-Users-o-src-personal/gone.jsonl" ] && echo 1 || echo 0)"
+rm -f "$BR/raw/chats/claude-code/host1/-Users-o-src-personal/gone.jsonl"
+# collect_from names the Claude projects folder (default ~/.claude/projects)
 mkdir -p "$HOME/.claude-work/projects/-Users-o-src-workonly"
 cp "$HOME/.claude/projects/-Users-o-src-personal/s1.jsonl" "$HOME/.claude-work/projects/-Users-o-src-workonly/wk.jsonl"
-out="$(SWARM_CLAUDE_CONFIG="$HOME/.claude-work" run run)"
-eq "an exported SWARM_CLAUDE_CONFIG is ignored: none of its chats listed" "0 1" "$(grep -c workonly "$RLOG.list") $(printf '%s\n' "$out" | grep -c 'collected 4 chat files')"
-# The brain is this swarm's .env SWARM_BRAIN_DIR, never one exported by the calling session.
-OTHER="$TMP/other-brain"; mkdir -p "$OTHER"
-out="$(SWARM_BRAIN_DIR="$OTHER" run run)"
-eq "primary: an exported SWARM_BRAIN_DIR is ignored" "1 0" "$(printf '%s\n' "$out" | grep -c 'collected 4 chat files') $(find "$OTHER" -type f | wc -l | tr -d ' ')"
+out="$(LIBRARIAN_COLLECT_FROM="$HOME/.claude-work/projects" run)"
+eq "collect_from: that folder's chats, under this host" "1 claude-code/host1/-Users-o-src-workonly/wk.jsonl" "$(printf '%s\n' "$out" | grep -c 'collected 1 chat files') $(cat "$RLOG.list")"
+rm -rf "$BR/raw/chats/claude-code/host1/-Users-o-src-workonly"
+out="$(LIBRARIAN_COLLECT_FROM=relative/path run)"
+eq "collect_from must be absolute: exit 0, no rsync" "1 0" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(grep -c . "$RLOG")"
+eq "a held lock with a live holder: skipped" 1 "$(mkdir -p "$SD/.brain-collect.lock"; sleep 30 & echo $! > "$SD/.brain-collect.lock/pid"; o="$(run)"; kill "$(cat "$SD/.brain-collect.lock/pid")"; rm -rf "$SD/.brain-collect.lock"; printf '%s\n' "$o" | grep -c 'another collection is running')"
 
 # --- the hourly stamp ------------------------------------------------------------------------------
-out="$(run hourly)"; eq "hourly: a second run within the hour does nothing" "1 0 0" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(wc -l < "$RLOG" | tr -d ' ') $(lines "$out")"
-echo $(( $(date +%s) - 4000 )) > "$S/.brain-collected"
-out="$(run hourly)"; eq "hourly: runs again after an hour" 1 "$(wc -l < "$RLOG" | tr -d ' ')"
-out="$(run run)"; eq "run: ignores the stamp" 1 "$(wc -l < "$RLOG" | tr -d ' ')"
+out="$(run --hourly)"; eq "hourly: a second run within the hour does nothing" "1 0 0" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(wc -l < "$RLOG" | tr -d ' ') $(lines "$out")"
+echo $(( $(date +%s) - 4000 )) > "$SD/.brain-collected"
+out="$(run --hourly)"; eq "hourly: runs again after an hour" 1 "$(wc -l < "$RLOG" | tr -d ' ')"
+out="$(run)"; eq "without --hourly: the stamp is ignored" 1 "$(wc -l < "$RLOG" | tr -d ' ')"
 
-# --- the standby: a push to the primary's brain, asked of the primary ------------------------------
-setenv SWARM_PAIR_SSH=peer.example; setrole standby; rm -f "$S/.brain-collected"
-mkdir -p "$REMOTE/srv/brain/raw"   # the primary's brain (raw/chats is made by the push)
-out="$(run run)"
-eq "standby: exit 0, one line" "1 1" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(lines "$out")"
-eq "standby: says where" 1 "$(printf '%s\n' "$out" | grep -c 'copied 4 chat files to the primary')"
-eq "standby: asks the primary for its brain" 1 "$(grep -c 'scripts/stack-role.sh brain' "$SLOG")"
-eq "standby: pushes over the pair ssh to that brain" 1 "$(grep -c -- '-e ssh .*peer.example:/srv/brain/raw/chats/$' "$RLOG")"
-eq "standby: exactly the listed files arrive" "$WANT" "$(tree "$REMOTE/srv/brain/raw/chats")"
-eq "standby: mtime kept" "$(mtime "$HOME/.claude/projects/-Users-o-src-personal/s1.jsonl")" "$(mtime "$REMOTE/srv/brain/raw/chats/claude-code/host1/-Users-o-src-personal/s1.jsonl")"
-eq "standby: never --delete" 0 "$(grep -c -- '--delete' "$RLOG")"
-eq "standby: the push has an I/O timeout, the ssh keepalives" "1 1" "$(grep -c -- '--timeout=300' "$RLOG") $(grep -c 'ServerAliveInterval=15 -o ServerAliveCountMax=4' "$RLOG")"
-eq "standby: nothing copied into its own brain" 0 "$(find "$BR/raw/chats" -newer "$S/.role" -type f | wc -l | tr -d ' ')"
-eq "standby: stamp written" 1 "$([ -s "$S/.brain-collected" ] && echo 1 || echo 0)"
-rm -f "$S/.brain-collected"
-out="$(SSH_DOWN=1 run hourly)"
-eq "unreachable peer: exit 0, one line" "1 1" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(lines "$out")"
-eq "unreachable peer: no rsync, no stamp" "0 0" "$(wc -l < "$RLOG" | tr -d ' ') $([ -f "$S/.brain-collected" ] && echo 1 || echo 0)"
-out="$(PEER_OLD=1 run run)"; eq "peer without a brain answer: exit 0, one line, no rsync" "1 1 0" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(lines "$out") $(wc -l < "$RLOG" | tr -d ' ')"
-out="$(PEER_BRAIN=relative/path run run)"; eq "peer answer not a path: exit 0, one line, no rsync" "1 1 0" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(lines "$out") $(wc -l < "$RLOG" | tr -d ' ')"
-out="$(RSYNC_FAIL=1 run run)"; eq "push fails: exit 0, one line, no stamp" "1 1 0" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(lines "$out") $([ -f "$S/.brain-collected" ] && echo 1 || echo 0)"
-setenv SWARM_PAIR_SSH=peer.example SWARM_TAILNET_SUFFIX=ts.example
-out="$(TS_NET=other.example run run)"; eq "off the swarm's tailnet: exit 0, one line, no ssh" "1 1 0" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(lines "$out") $(wc -l < "$SLOG" | tr -d ' ')"
-setenv SWARM_PAIR_SSH=peer.example SWARM_IDENTITY=personal
-out="$(run run)"; eq "identity mismatch: exit 0, one line, no rsync" "1 1 0" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(lines "$out") $(wc -l < "$RLOG" | tr -d ' ')"
-setenv; setrole standby
-out="$(run run)"; eq "standby without a pair: exit 0, one line, no rsync" "1 1 0" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(lines "$out") $(wc -l < "$RLOG" | tr -d ' ')"
+# --- --to: another wiki, local or over a remote shell ---------------------------------------------------
+rm -f "$SD/.brain-collected"
+O="$TMP/other"; mkdir -p "$O"
+out="$(run --to "$O")"
+eq "--to DIR: exactly the listed files arrive there" "$WANT" "$(tree "$O/raw/chats")"
+eq "--to DIR: nothing new in this host's wiki" 0 "$(find "$BR/raw/chats" -newer "$SD/.brain-collected" -type f | wc -l | tr -d ' ')"
+mkdir -p "$REMOTE/srv/brain/raw"
+out="$(run --to peer.example:/srv/brain --rsh "ssh -o BatchMode=yes")"
+eq "--to host:/dir: exit 0, one line" "1 1" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(lines "$out")"
+eq "--to host:/dir: says where" 1 "$(printf '%s\n' "$out" | grep -c 'copied 4 chat files to peer.example$')"
+eq "--to host:/dir: pushes over the remote shell given" 1 "$(grep -c -- '-e ssh -o BatchMode=yes .*peer.example:/srv/brain/raw/chats/$' "$RLOG")"
+eq "--to host:/dir: exactly the listed files arrive" "$WANT" "$(tree "$REMOTE/srv/brain/raw/chats")"
+eq "--to host:/dir: mtime kept" "$(mtime "$HOME/.claude/projects/-Users-o-src-personal/s1.jsonl")" "$(mtime "$REMOTE/srv/brain/raw/chats/claude-code/host1/-Users-o-src-personal/s1.jsonl")"
+eq "--to host:/dir: an I/O timeout, never --delete" "1 0" "$(grep -c -- '--timeout=300' "$RLOG") $(grep -c -- '--delete' "$RLOG")"
+rm -f "$SD/.brain-collected"
+out="$(RSYNC_FAIL=1 run --to peer.example:/srv/brain)"; eq "a failed push: exit 0, one line, no stamp" "1 1 0" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(lines "$out") $([ -f "$SD/.brain-collected" ] && echo 1 || echo 0)"
+out="$(run --to relative/dir)"; eq "--to neither absolute nor host:/path: exit 0, one line, no rsync" "1 1 0" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(lines "$out") $(grep -c . "$RLOG")"
+eq "a bad option: usage, exit 2" 1 "$(run --bogus | grep -c '^rc=2$')"
 
-# --- a swarm without a brain collects nothing (a work swarm's Claude home never travels) -----------
-printf 'SWARM_MACHINE=host1\n' > "$S/.env"; setrole primary
-out="$(SWARM_BRAIN_DIR="$BR" run run)"; eq "no SWARM_BRAIN_DIR in the swarm's .env: exit 0, one line, no rsync" "1 1 0" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(lines "$out") $(wc -l < "$RLOG" | tr -d ' ')"
+# --- no wiki set: nothing collected ------------------------------------------------------------------
+printf 'host = "host1"\nstate_dir = "%s"\n' "$SD" > "$CONF"
+out="$(run)"; eq "no wiki_dir: exit 0, one line, no rsync" "1 1 0" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(lines "$out") $(grep -c . "$RLOG")"
 
-# --- stack-role.sh answers the brain directory ------------------------------------------------------
-setenv
-eq "stack-role.sh brain" "$BR" "$(bash "$TMP/scripts/stack-role.sh" --swarm personal brain 2>/dev/null | tail -1)"
-printf 'SWARM_MACHINE=host1\nSWARM_BRAIN_DIR=~/brainx/\n' > "$S/.env"
-eq "stack-role.sh brain: a ~ path comes back absolute" "$HOME/brainx" "$(bash "$TMP/scripts/stack-role.sh" --swarm personal brain 2>/dev/null | tail -1)"
-setenv
-
-# --- the hooks ---------------------------------------------------------------------------------------
-# standby-sync's standby pass: the collector runs after the pass lets go of its lock.
-setenv SWARM_PAIR_SSH=peer.example; setrole standby; rm -f "$S/.brain-collected"; rm -rf "$REMOTE/srv/brain"; mkdir -p "$REMOTE/srv/brain/raw"
-: > "$RLOG"; : > "$SLOG"; rm -f "$RLOG.lock"
-out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
-eq "standby-sync: exit 0" 1 "$(printf '%s\n' "$out" | grep -c '^rc=0$')"
-eq "standby-sync: chats pushed" 1 "$(printf '%s\n' "$out" | grep -c 'copied 4 chat files to the primary')"
-eq "standby-sync: the pull held the sync lock, the collector did not" "1 0 1" "$(cat "$RLOG.lock" 2>/dev/null | grep -c 'srv/state/standby/latest') $(cat "$RLOG.lock" 2>/dev/null | grep -c 'brain/raw/chats') $(grep -c 'peer.example:/srv/brain/raw/chats/' "$RLOG")"
-eq "standby-sync: no lock left" 0 "$([ -d "$S/standby/.lock" ] && echo 1 || echo 0)"
-out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1)"
-eq "standby-sync: hourly, so the next pass does not push again" 0 "$(printf '%s\n' "$out" | grep -c 'chat files')"
-# Every pass asks lead.sh to beat for the lead (the watcher's lead check); a failure is never fatal.
-printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "$RLOG.beat"\nexit 1\n' > "$TMP/scripts/lead.sh"; rm -f "$RLOG.beat"
-out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
-eq "standby-sync: one lead beat per pass, a failed one not fatal" "beat 1" "$(cat "$RLOG.beat" 2>/dev/null) $(printf '%s\n' "$out" | grep -c '^rc=0$')"
-cp "$SRC/scripts/lead.sh" "$TMP/scripts/lead.sh"
-# Every pass also runs the mail token check with --report (it throttles itself); never fatal.
-printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "$RLOG.mail"\nexit 1\n' > "$TMP/scripts/mail-connector.sh"; rm -f "$RLOG.mail"
-out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
-eq "standby-sync: one mail health report per pass, a failed one not fatal" "health --report 1" "$(cat "$RLOG.mail" 2>/dev/null) $(printf '%s\n' "$out" | grep -c '^rc=0$')"
-cp "$SRC/scripts/mail-connector.sh" "$TMP/scripts/mail-connector.sh"
-# standby-sync's standby pass also fast-forwards a clean brain clone here; a dirty one is left, a failure never fatal.
-UP="$TMP/brain-up"; CL="$TMP/brain-clone"; G="git -c user.name=t -c user.email=t@example.com"
-git init -q "$UP" && : > "$UP/index.md" && git -C "$UP" add . && $G -C "$UP" commit -q -m one && git clone -q "$UP" "$CL"
-printf 'x\n' > "$UP/index.md" && $G -C "$UP" commit -q -am two
-printf 'SWARM_MACHINE=host1\nSWARM_BRAIN_DIR=%s\n' "$CL" > "$S/.env"; setrole standby; rm -f "$S/.brain-collected"
-out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
-eq "standby-sync: a clean brain clone is fast-forwarded" "$(git -C "$UP" rev-parse HEAD) 1" "$(git -C "$CL" rev-parse HEAD) $(printf '%s\n' "$out" | grep -c '^rc=0$')"
-printf 'y\n' > "$UP/index.md" && $G -C "$UP" commit -q -am three
-mkdir -p "$CL/raw/notes"; printf 'a note\n' > "$CL/raw/notes/n.md"
-out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
-eq "standby-sync: an untracked note does not block the pull" "$(git -C "$UP" rev-parse HEAD) 0" "$(git -C "$CL" rev-parse HEAD) $(printf '%s\n' "$out" | grep -c 'brain pull')"
-rm -f "$CL/raw/notes/n.md"; printf 'z\n' > "$UP/index.md" && $G -C "$UP" commit -q -am four; printf 'dirty\n' >> "$CL/index.md"
-out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
-eq "standby-sync: a dirty brain clone is left, with a log line" "1 1 1" "$([ "$(git -C "$CL" rev-parse HEAD)" != "$(git -C "$UP" rev-parse HEAD)" ] && echo 1) $(printf '%s\n' "$out" | grep -c 'brain pull skipped') $(printf '%s\n' "$out" | grep -c '^rc=0$')"
-git -C "$CL" checkout -q -- index.md; rm -rf "$UP"
-out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
-eq "standby-sync: a failed brain pull is logged and not fatal" "1 1" "$(printf '%s\n' "$out" | grep -c 'brain pull failed') $(printf '%s\n' "$out" | grep -c '^rc=0$')"
-# A brain remote that stops answering never holds the pass: the fetch is bounded (BRAIN_PULL_SECONDS).
-git -C "$CL" remote set-url origin hang.example:brain
-t0="$(date +%s)"
-out="$(SSH_HANG=1 BRAIN_PULL_SECONDS=1 bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
-eq "standby-sync: a stalled brain fetch is cut off, logged, not fatal" "1 1 1" "$(printf '%s\n' "$out" | grep -c 'brain pull timed out') $(printf '%s\n' "$out" | grep -c '^rc=0$') $([ $(( $(date +%s) - t0 )) -lt 10 ] && echo 1)"
-out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
-eq "standby-sync: a fetch that fails fast is a failed pull" "1 0 1" "$(printf '%s\n' "$out" | grep -c 'brain pull failed') $(printf '%s\n' "$out" | grep -c 'timed out') $(printf '%s\n' "$out" | grep -c '^rc=0$')"
-# standby-sync's standby pass exports the desktop's calendar and pushes it to the primary's <state>/calendar;
-# a deskkit failure is logged and never fails the pass.
-cat > "$TMP/bin/deskkit" <<'SH'
-#!/bin/sh
-if [ "$1" = caps ]; then echo '["calendar"]'; exit 0; fi
-[ -z "${DESK_FAIL:-}" ] || exit 2
-echo '{"events":[],"accounts_seen":["Personal"]}'
-SH
-chmod +x "$TMP/bin/deskkit"
-setenv SWARM_PAIR_SSH=peer.example "SWARM_DESKKIT=$TMP/bin/deskkit" SWARM_DESK_ACCOUNTS=Personal; setrole standby
-rm -rf "$REMOTE/srv/state/calendar"; mkdir -p "$REMOTE/srv/state"; : > "$RLOG"
-out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
-eq "standby-sync: the calendar snapshot reaches the primary's calendar directory" "1 1 1" \
-  "$([ -f "$REMOTE/srv/state/calendar/snapshot.json" ] && echo 1) $(grep -c 'peer.example:/srv/state/calendar/' "$RLOG") $(printf '%s\n' "$out" | grep -c '^rc=0$')"
-out="$(DESK_FAIL=1 bash "$TMP/scripts/standby-sync.sh" --swarm personal run 2>&1; echo "rc=$?")"
-eq "standby-sync: a failed calendar export is logged, not fatal" "1 1" \
-  "$(printf '%s\n' "$out" | grep -c 'calendar export failed') $(printf '%s\n' "$out" | grep -c '^rc=0$')"
-out="$(bash "$TMP/scripts/standby-sync.sh" --swarm personal status 2>&1)"
-eq "standby-sync status: the calendar snapshot's age" 1 "$(printf '%s\n' "$out" | grep -c '^calendar snapshot: [0-9]* min old, 0 events$')"
-rm -f "$TMP/bin/deskkit"
-
-# brain-ingest run: the collector runs before the gate.
-setenv; setrole primary; rm -rf "$BR/raw/chats"; mkdir -p "$BR/raw/chats"; git -C "$BR" init -q
-mkdir -p "$S/gates"; printf 'echo "test gate"\nexit 10\n' > "$S/gates/brain-ingest"
-out="$(bash "$TMP/scripts/brain-ingest.sh" --swarm personal run 2>&1; echo "rc=$?")"
-eq "brain-ingest: exit 0" 1 "$(printf '%s\n' "$out" | grep -c '^rc=0$')"
-eq "brain-ingest: collected, then gated" "collected gated" "$(printf '%s\n' "$out" | sed -n 's/.*\(collected\) 4 chat files.*/\1/p; s/.*\(gated\): test gate.*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
-eq "brain-ingest: the chats arrived" "$WANT" "$(tree "$BR/raw/chats")"
-out="$(RSYNC_FAIL=1 bash "$TMP/scripts/brain-ingest.sh" --swarm personal run 2>&1; echo "rc=$?")"
-eq "brain-ingest: a failed collection never fails the run" "1 1" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(printf '%s\n' "$out" | grep -c 'gated: test gate')"
+# --- the ingest collects before its gate ----------------------------------------------------------------
+setconf; rm -rf "$BR/raw/chats"; mkdir -p "$BR/raw/chats"; git -C "$BR" init -q
+mkdir -p "$TMP/gates"; printf 'echo "test gate"\nexit 10\n' > "$TMP/gates/g"; printf 'gate_cmd = "%s"\n' "$TMP/gates/g" >> "$CONF"
+out="$(bash "$SRC/bin/librarian" ingest 2>&1; echo "rc=$?")"
+eq "ingest: exit 0" 1 "$(printf '%s\n' "$out" | grep -c '^rc=0$')"
+eq "ingest: collected, then gated" "collected gated" "$(printf '%s\n' "$out" | sed -n 's/.*\(collected\) 4 chat files.*/\1/p; s/.*\(gated\): test gate.*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
+eq "ingest: the chats arrived" "$WANT" "$(tree "$BR/raw/chats")"
+out="$(RSYNC_FAIL=1 bash "$SRC/bin/librarian" ingest 2>&1; echo "rc=$?")"
+eq "ingest: a failed collection never fails the run" "1 1" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(printf '%s\n' "$out" | grep -c 'gated: test gate')"
 
 fails="$(nfails)"; [ "$fails" = 0 ] && echo "all ok" || { echo "$fails failed"; exit 1; }

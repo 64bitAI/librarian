@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stage A of the brain's ingest: each masked digest becomes a short condensed note, written by
 Claude (headless, one turn, no tools, from an empty temp dir) or by a local model through Ollama's
-HTTP API (no cost). Stdlib only; called by brain-ingest.sh.
+HTTP API (no cost). Stdlib only; called by lib/ingest.sh.
 
   brain_condense.py condense BRAIN    condense pending digests (oldest first) that have no current
                                       note, until BRAIN_LOCAL_MAX_SECONDS; prints counts
@@ -16,7 +16,7 @@ HTTP API (no cost). Stdlib only; called by brain-ingest.sh.
   brain_condense.py one FILE          condense one digest file to stdout with the local model
 
 Which writer (BRAIN_CONDENSE): claude, local, or auto (default): Claude while this month's
-remainder (BRAIN_COST_CAP_USD, the cap brain-ingest.sh resolved for the month, less the month's
+remainder (BRAIN_COST_CAP_USD, the cap lib/ingest.sh resolved for the month, less the month's
 spend) is at least BRAIN_CONDENSE_MIN_USD (1), else the local model. A note made locally while
 Claude is usable is not current, so it is redone with Claude when the money allows. Claude's spend
 is added to the month (state/costs.json, kind condense) after every call; one run starts no new
@@ -187,7 +187,7 @@ class ClaudeError(Exception):
 def claude(user, cfg, system=SYSTEM, timeout=900):
     """One headless Claude call: the transcript on stdin, the same system prompt as the local model,
     one turn, no tools, no settings files, hooks or MCP servers, no session saved, no API key (the
-    swarm's login), from a fresh empty temp dir that is removed after. Returns (text, cost); raises
+    caller's login), from a fresh empty temp dir that is removed after. Returns (text, cost); raises
     ClaudeError(why, cost) on a failed or unreadable result (an unreadable one counts call_usd)."""
     d = tempfile.mkdtemp(prefix="brain-condense-")
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}

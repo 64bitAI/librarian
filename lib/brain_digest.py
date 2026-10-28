@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The brain's digests, ingest queue and spend record (stdlib only; called by brain-ingest.sh).
+"""The brain's digests, ingest queue and spend record (stdlib only; called by lib/ingest.sh).
 
   brain_digest.py digest BRAIN            raw chats -> raw/digests/ (masked, capped); prints counts
   brain_digest.py queue  BRAIN CHARS      digests not yet ingested, oldest first, within CHARS; one path per line
@@ -148,14 +148,15 @@ def strict(text):
 
 # Work material never enters the brain (its CLAUDE.md, Identity): a session whose project folder,
 # cwd or title, or a conversation whose account or title, matches BRAIN_EXCLUDE (one regular
-# expression, case-insensitive) gets no digest at all. The default names the owner's employer's
-# folders and forge; set BRAIN_EXCLUDE in the swarm's .env to replace it.
-EXCLUDE_DEFAULT = r"employerco|(?<![a-z0-9])wrk(?![a-z0-9])|gitea"
+# expression, case-insensitive) gets no digest at all. There is no default: unset or empty
+# excludes nothing, so set BRAIN_EXCLUDE (exclude in librarian.toml) to your employer's folders,
+# forge and account names.
+NOTHING = r"(?!)"  # matches nothing
 
 
 def excluder():
     rx = os.environ.get("BRAIN_EXCLUDE")
-    rx = EXCLUDE_DEFAULT if rx is None or not rx.strip() else rx
+    rx = NOTHING if rx is None or not rx.strip() else rx
     return re.compile(rx, re.I)
 
 
@@ -327,7 +328,7 @@ def folder_of(cwd):
     return re.sub(r"[^A-Za-z0-9]", "-", cwd)
 
 
-# --- the collector's list (brain-collect.sh) ------------------------------------------------------
+# --- the collector's list (lib/collect.sh) -------------------------------------------------------
 # Run on the host that has the chats, before anything is copied: work material (BRAIN_EXCLUDE) and
 # chats from temp folders (our own consults and scratch runs) never leave it. A chat is kept only
 # when no folder or title it names is excluded and it did not start in a temp folder (a session that
@@ -893,7 +894,7 @@ def add_cost(brain, usd, kind="ingest", items=0):
 
 def cmd_cost(brain, args):
     # Tracked in the brain (state/costs.json) and committed by the job, so the month's spend moves
-    # with the brain to whichever machine is primary.
+    # with the brain to whichever machine runs the ingest.
     p, costs, m = _costs(brain)
     op = args[0] if args else "month"
     if op == "add":

@@ -1,7 +1,7 @@
 # The brain with any agent
 
-A short guide to the brain, the owner's second-brain wiki, written so that anyone can adopt the
-pattern with whatever agent they use. It leans on open formats rather than on any one tool.
+A short guide to the brain, a second-brain wiki kept by librarian, written so that anyone can adopt
+the pattern with whatever agent they use. It leans on open formats rather than on any one tool.
 Anything marked "not built yet" is a recommendation, not something running today.
 
 ## What it is
@@ -19,18 +19,18 @@ The brain is a private git repo of plain Markdown, kept by an LLM in the pattern
 - `log.md`: append-only history, one heading per operation (`## [YYYY-MM-DD] ingest | subject`).
 - `CLAUDE.md`: the schema and rules for whoever reads or writes the repo.
 
-A collector (`scripts/brain-collect.sh`) copies each host's Claude Code chats
-into the brain's git-ignored `raw/chats/`: the primary into its own clone before the ingest, the
-standby over the pair's ssh at most hourly. The list of files is made on the host that has them
+A collector (`librarian collect`) copies each host's Claude Code chats
+into the brain's git-ignored `raw/chats/`: the machine that ingests into its own clone before the
+ingest, any other machine with `librarian collect --hourly --to host:/dir` over ssh. The list of files is made on the host that has them
 (`brain_digest.py collect-list`), so work sessions (`BRAIN_EXCLUDE`), temp folders (`/tmp`,
 `/private/tmp`, `/var/tmp`, `/private/var/tmp`, `/var/folders`, `/private/var/folders`, and any
 path with a Claude scratchpad `claude-<uid>`) never leave it.
 
-A nightly ingest (`scripts/brain-ingest.sh` in this repo, on the swarm's primary) keeps it current
+A nightly ingest (`librarian ingest`, on one machine) keeps it current
 in two stages. Stage A turns new raw chats into masked digests and then into short condensed notes.
 Stage B merges the night's notes, the owner's notes from `raw/notes/` first, into `wiki/`, `index.md` and `log.md` in a sandboxed temp copy;
-the job checks the result, copies back only those paths, commits and pushes. The README's "The
-brain" section has the details.
+the job checks the result, copies back only those paths, commits and pushes. The README has the
+details.
 
 Read rules: read `index.md` first, then only the pages it points to; answer with citations to page
 paths. Write rules: there is one writer, the ingest. Agents and people never edit `wiki/`,
@@ -51,7 +51,7 @@ page.
 Every file is plain Markdown in git. Any editor, any agent with file access, and any viewer
 (Obsidian, a code host, `less`) can read it. Every change is a diffable commit with a subject that
 says who made it (`ingest:` for the job, anything else for a person), and the repo is backed up
-like any other (the swarm's backup includes a git bundle of it). Nothing about the store depends
+like any other. Nothing about the store depends
 on a particular model or vendor.
 
 ### AGENTS.md as the portable entry point
@@ -74,9 +74,8 @@ frontmatter has at least `name` and `description`, followed by instructions. Age
 name and description up front and read the rest when a task matches, so a skill costs little
 until it is used.
 
-A "brain" skill for other agents is not built. The one the Codex and Gemini engines used was removed
-with them. A brain clone on a standby machine is still fast-forwarded by `standby-sync.sh` (clean
-clones only). Such a skill should say:
+This repo is also a Claude Code plugin whose skill (`skills/librarian/SKILL.md`) does this for
+Claude Code. A skill for other agents should say the same:
 
 - When to consult the brain: questions about the owner's people, projects, decisions, datasets or
   history, before guessing or asking.
@@ -149,12 +148,11 @@ What is Claude-specific today:
   work material never leaves the work machine. `BRAIN_EXCLUDE` is matched against a Claude Code
   subagent's agent type too (the `agentType` in its `agent-*.meta.json`, such as `wrk:wrk-voice`),
   so an excluded subagent run from a personal project stays behind, and the digest pass checks the
-  type again; extending `BRAIN_EXCLUDE` with `|therapy|legal` in a host's `.env` keeps those
+  type again; extending `BRAIN_EXCLUDE` with `|therapy|legal` in a host's config keeps those
   agents' runs out the same way. A subagent with no readable meta is judged on its folder and title
   as before. What stays a residual: text the parent session quotes back from an excluded subagent
   (its tool result) travels with the parent, as an excluded path the parent names only in passing does. What arrives is kept as it came (nothing is deleted
-  at the brain) and goes into the swarm's encrypted backup set as `brain-chats.tgz`, since the
-  brain's git bundle never holds it. Digests, condensed notes and job state are git-ignored too.
+  at the brain); back it up separately, since a git bundle of the brain never holds it. Digests, condensed notes and job state are git-ignored too.
 - The merging model sees only the night's notes and the wiki, never `raw/` (owner notes from
   `raw/notes/` are copied in after their checks, not read in place).
 - One writer, and the owner's hand edits win.

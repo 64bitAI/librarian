@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# The brain ingest's gate (scripts/brain-ingest.sh; the convention is run_gated in scripts/common.sh):
+# The ingest's built-in gate (lib/ingest.sh asks it through run_gate in lib/common.sh):
 # exit 10 when no raw chat is new or changed since the last digest pass, no digest waits to be
 # ingested and no committed owner note (raw/notes) waits, here or on the upstream branch, so the
 # night's run starts neither Claude nor the local model; else 0. Reads the brain's state and git;
 # the only write is a quiet `git fetch` (remote refs only, never the work tree), bounded by
 # BRAIN_GATE_FETCH_SECONDS (20) and failing open to what is already fetched. Prints counts, never a
 # chat's, a digest's or a note's contents.
-#   gates/brain-ingest.sh BRAIN
+#   lib/gate.sh WIKI
 set -euo pipefail
-BRAIN="${1:?usage: brain-ingest.sh BRAIN}"
-DIGEST="${SWARM_REPO:-$(cd "$(dirname "$0")/.." && pwd)}/scripts/brain_digest.py"
+BRAIN="${1:?usage: gate.sh WIKI}"
+DIGEST="$(cd "$(dirname "$0")" && pwd)/brain_digest.py"
 fresh="$(python3 "$DIGEST" fresh "$BRAIN")"
 pending="$(python3 "$DIGEST" pending "$BRAIN")"
 notes="$(python3 "$DIGEST" notes "$BRAIN" pending)"
