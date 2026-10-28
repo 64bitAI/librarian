@@ -314,6 +314,7 @@ eq "ingest_lock_timeout_exits_75: exit 75" 75 "$(SWARM_BRAIN_LOCK_WAIT=2 SWARM_B
 eq "ingest_lock_timeout_exits_75: no claude" 0 "$(calls)"
 eq "ingest_lock_timeout_exits_75: log line" 1 "$(grep -c 'still held by pid .* after 2s; giving up' "$TMP/out")"
 eq "ingest_lock_timeout_exits_75: the holder's lock is left alone" "$LIVE" "$(cat "$BR/raw/.state/ingest.lock/pid")"
+eq "ingest_lock_timeout_exits_75: an alert is raised" 1 "$(grep -c 'brain: ingest gave up waiting for the ingest lock on m1 (lock-timeout)' "$HELD")"
 eq "ingest_lock_timeout_exits_75: recorded for status" 1 "$(grep -c 'failed lock-timeout' "$BR/raw/.state/last-run")"
 kill "$LIVE" 2>/dev/null; wait "$LIVE" 2>/dev/null
 echo 999999 > "$BR/raw/.state/ingest.lock/pid"

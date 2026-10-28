@@ -160,12 +160,16 @@ LOCK="$BRAIN/raw/.state/ingest.lock"
 # silently: on a timeout it logs and exits 75 (the job alerts on a non-zero exit). A lock whose pid
 # is not alive is stale and taken over, as before.
 LOCK_WAIT="$(envget SWARM_BRAIN_LOCK_WAIT 1800)"; LOCK_POLL="$(envget SWARM_BRAIN_LOCK_POLL 10)"
-waited=0
+waited=0; grace=""
 while ! mkdir "$LOCK" 2>/dev/null; do
   pid="$(cat "$LOCK/pid" 2>/dev/null || true)"
+  # an empty pid file may be half written by its owner: look again once before calling it stale
+  if [ -z "$pid" ] && [ -z "$grace" ]; then grace=1; sleep 1; continue; fi
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
     if [ "$waited" -ge "$LOCK_WAIT" ]; then
-      log "ingest lock still held by pid $pid after ${waited}s; giving up"; last_run "failed lock-timeout"; exit 75
+      log "ingest lock still held by pid $pid after ${waited}s; giving up"; last_run "failed lock-timeout"
+      matrix_alert "brain: ingest gave up waiting for the ingest lock on $(envget SWARM_MACHINE "$(hostname -s)") (lock-timeout)" || true
+      exit 75
     fi
     [ "$waited" -gt 0 ] || log "ingest lock held by pid $pid; waiting up to ${LOCK_WAIT}s"
     sleep "$LOCK_POLL"; waited=$((waited + LOCK_POLL)); continue
