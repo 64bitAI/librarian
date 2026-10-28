@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stage A of the brain's ingest: each masked digest becomes a short condensed note, written by
 Claude (headless, one turn, no tools, from an empty temp dir) or by a local model through Ollama's
-HTTP API (no cost). Stdlib only; called by brain-ingest.sh and brain_compare.py.
+HTTP API (no cost). Stdlib only; called by brain-ingest.sh.
 
   brain_condense.py condense BRAIN    condense pending digests (oldest first) that have no current
                                       note, until BRAIN_LOCAL_MAX_SECONDS; prints counts
