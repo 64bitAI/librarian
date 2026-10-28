@@ -155,7 +155,7 @@ upstream=""; git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1 && upstream=1
 
 # --- one run at a time --------------------------------------------------------------------------
 LOCK="$BRAIN/raw/.state/ingest.lock"
-# A live holder (Crown filing a report into the brain, or another ingest) is waited for, up to
+# A live holder (Reign filing a report into the brain, or another ingest) is waited for, up to
 # SWARM_BRAIN_LOCK_WAIT seconds (1800), polling every SWARM_BRAIN_LOCK_POLL (10); a run never skips
 # silently: on a timeout it logs and exits 75 (the job alerts on a non-zero exit). A lock whose pid
 # is not alive is stale and taken over, as before.
