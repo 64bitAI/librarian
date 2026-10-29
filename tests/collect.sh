@@ -14,6 +14,9 @@ export RLOG="$TMP/rlog" REAL_RSYNC REMOTE="$TMP/remote" TMPDIR="$TMP/tmpdir"; mk
 
 cat > "$TMP/bin/rsync" <<'SH'
 #!/bin/bash
+# openrsync (macOS /usr/bin/rsync) runs a local copy's receiver as "rsync --server" from PATH: that
+# is this stub again. Pass it through unlogged so one collect is one line.
+[ "${1:-}" != --server ] || exec "$REAL_RSYNC" "$@"
 printf '%s\n' "$*" >> "$RLOG"
 args=(); skip=""
 for a in "$@"; do

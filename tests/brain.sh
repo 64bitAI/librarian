@@ -333,16 +333,16 @@ eq "lock released after the run" no "$([ -d "$BR/raw/.state/ingest.lock" ] && ec
 eq "cap: one alert held" 1 "$(grep -c 'brain: ingest paused, monthly cap reached' "$HELD")"
 eq "cap: says so" 1 "$(grep -c 'ingest paused' "$TMP/out")"
 
-# a lock held by a live process (Reign filing a report: it drops the lock when done) is waited for, then
+# a lock held by a live process (another writer filing a report: it drops the lock when done) is waited for, then
 # the run goes on (here it ends at the cap, so no claude is needed to see it get past the lock)
 mkdir -p "$BR/raw/.state/ingest.lock"; sleep 2 & HOLD=$!; echo "$HOLD" > "$BR/raw/.state/ingest.lock/pid"
 ( while kill -0 "$HOLD" 2>/dev/null; do sleep 0.2; done; rm -rf "$BR/raw/.state/ingest.lock" ) &
 SWARM_BRAIN_LOCK_WAIT=30 SWARM_BRAIN_LOCK_POLL=1 job run > "$TMP/rc"; wait "$HOLD" 2>/dev/null
-eq "ingest_waits_for_reign_lock: exit 0" 0 "$(cat "$TMP/rc")"
-eq "ingest_waits_for_reign_lock: the log says waited" 1 "$(grep -c 'waited [0-9]*s for the ingest lock' "$TMP/out")"
-eq "ingest_waits_for_reign_lock: it ran past the lock" 1 "$(grep -c 'ingest paused' "$TMP/out")"
-eq "ingest_waits_for_reign_lock: not taken as stale" 0 "$(grep -c 'stale lock' "$TMP/out")"
-eq "ingest_waits_for_reign_lock: lock released" no "$([ -d "$BR/raw/.state/ingest.lock" ] && echo yes || echo no)"
+eq "ingest_waits_for_held_lock: exit 0" 0 "$(cat "$TMP/rc")"
+eq "ingest_waits_for_held_lock: the log says waited" 1 "$(grep -c 'waited [0-9]*s for the ingest lock' "$TMP/out")"
+eq "ingest_waits_for_held_lock: it ran past the lock" 1 "$(grep -c 'ingest paused' "$TMP/out")"
+eq "ingest_waits_for_held_lock: not taken as stale" 0 "$(grep -c 'stale lock' "$TMP/out")"
+eq "ingest_waits_for_held_lock: lock released" no "$([ -d "$BR/raw/.state/ingest.lock" ] && echo yes || echo no)"
 eq "I6: the spend is tracked in the brain" "state/costs.json" "$(g ls-files state)"
 eq "I6: and pushed" "$(g rev-parse HEAD)" "$(git -C "$OR" rev-parse main)"
 job run >/dev/null
@@ -480,8 +480,11 @@ eq "the prompt lists the queued note" 1 "$(grep -c '^- notes/h1/-proj-c/huge.md$
 eq "the prompt keeps work out" 1 "$(grep -c 'skipped: work' "$CLOG.prompt" | awk '{print ($1 > 0)}')"
 
 # C1: claude ran in a temp dir with only what it needs; no raw/, not inside the brain; no API key
+# outside PATH: 1 when PATH is not under the brain, else 0. A function, not a case inside $( ):
+# bash 3.2 (macOS /bin/bash) ends the substitution at the first pattern's ")".
+outside() { case "$1" in "$(cd "$BR" && pwd -P)"*) echo 0 ;; *) echo 1 ;; esac; }
 eq "C1: cwd holds only CLAUDE.md, index.md, log.md, notes, wiki" "CLAUDE.md index.md log.md notes wiki" "$(sort "$CLOG.ls" | paste -sd' ' -)"
-eq "C1: cwd is not inside the brain" 1 "$(case "$(cat "$CLOG.cwd")" in "$(cd "$BR" && pwd -P)"*) echo 0 ;; *) echo 1 ;; esac)"
+eq "C1: cwd is not inside the brain" 1 "$(outside "$(cat "$CLOG.cwd")")"
 eq "C1: the temp dir is gone after the run" no "$([ -e "$(cat "$CLOG.cwd")" ] && echo yes || echo no)"
 eq "claude gets no ANTHROPIC_API_KEY" "key=unset" "$(cat "$CLOG.env")"
 
@@ -531,7 +534,7 @@ eq "claude condense argv: the same system prompt as the local model" 1 "$(grep -
 eq "claude condense argv: a per-call ceiling" "0.50" "$(grep -A1 -x -- '--max-budget-usd' "$CLOG.c" | tail -1)"
 eq "claude condense: the transcript is fenced, on stdin" "<transcript>" "$(cat "$CLOG.c.stdin")"
 eq "claude condense: an empty cwd" "" "$(cat "$CLOG.c.ls")"
-eq "claude condense: cwd outside the brain, removed after" "1 no" "$(case "$(cat "$CLOG.c.cwd")" in "$(cd "$BR" && pwd -P)"*) printf 0 ;; *) printf 1 ;; esac) $([ -e "$(cat "$CLOG.c.cwd")" ] && echo yes || echo no)"
+eq "claude condense: cwd outside the brain, removed after" "1 no" "$(outside "$(cat "$CLOG.c.cwd")") $([ -e "$(cat "$CLOG.c.cwd")" ] && echo yes || echo no)"
 eq "claude condense: no ANTHROPIC_API_KEY" "key=unset" "$(cat "$CLOG.c.env")"
 eq "claude condense: notes say claude:sonnet" "claude:sonnet" "$(models)"
 eq "claude condense: header line" 1 "$(grep -c '^- condensed-by: claude:sonnet$' "$NOTE1")"
