@@ -95,7 +95,9 @@ alerted); 2 for a usage or config error; 75 when the ingest lock stayed held.
 ## Install
 
 The CLI: clone the repo and link `bin/librarian` onto your `PATH`. To run it nightly, render
-`units/systemd/` (Linux) or `units/launchd/` (macOS); each file's header says how.
+`units/systemd/` (Linux) or `units/launchd/` (macOS); each file's header says how. `librarian-ingest` is the nightly
+job for the one machine that runs the ingest; `librarian-collect` is the job for any other machine, which pushes its
+chats there.
 
 The plugin: in Claude Code, `/plugin marketplace add <path or URL of this repo>`, then
 `/plugin install librarian@librarian`. Its skill tells sessions to read `index.md` first, never to

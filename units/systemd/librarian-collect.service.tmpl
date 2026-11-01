@@ -1,0 +1,15 @@
+# A second machine's chats, pushed to the machine that runs the ingest (librarian collect --hourly --to),
+# a systemd user service. Render it with
+#   sed -e "s|@LIBRARIAN@|$(command -v librarian)|" -e "s|@CONFIG@|$HOME/.config/librarian/librarian.toml|" \
+#     -e "s|@DEST@|host:/path/to/wiki|" units/systemd/librarian-collect.service.tmpl \
+#     > ~/.config/systemd/user/librarian-collect.service
+# copy librarian-collect.timer next to it, then: systemctl --user daemon-reload &&
+# systemctl --user enable --now librarian-collect.timer (and loginctl enable-linger to run logged out).
+# The machine that runs the ingest needs neither: librarian ingest collects its own chats first.
+[Unit]
+Description=librarian collect, to the machine that runs the ingest
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=@LIBRARIAN@ --config @CONFIG@ collect --hourly --to @DEST@ --rsh "ssh -o BatchMode=yes -o ConnectTimeout=10"

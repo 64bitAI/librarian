@@ -1,0 +1,11 @@
+# Every 15 minutes; collect --hourly does nothing until an hour has passed, so a laptop back from sleep catches up soon.
+# Goes next to librarian-collect.service (see its header).
+[Unit]
+Description=librarian collect, checked every 15 minutes
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+
+[Install]
+WantedBy=timers.target

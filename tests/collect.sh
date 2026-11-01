@@ -167,6 +167,16 @@ out="$(run --to relative/dir)"; eq "--to neither absolute nor host:/path: exit 0
 eq "a bad option: usage, exit 2" 1 "$(run --bogus | grep -c '^rc=2$')"
 
 # --- no wiki set: nothing collected ------------------------------------------------------------------
+# The second machine's job: hourly, into the machine that runs the ingest. Templates only; nothing is installed.
+U="$SRC/units"; T1="$U/systemd/librarian-collect.service.tmpl"; T2="$U/systemd/librarian-collect.timer"; T3="$U/launchd/librarian-collect.plist.tmpl"
+eq "collect unit: the templates exist" "yes yes yes" "$([ -f "$T1" ] && echo yes) $([ -f "$T2" ] && echo yes) $([ -f "$T3" ] && echo yes)"
+eq "collect unit: systemd runs collect --hourly --to" 1 "$(grep -c '^ExecStart=@LIBRARIAN@ --config @CONFIG@ collect --hourly --to @DEST@ --rsh ' "$T1")"
+eq "collect unit: the timer ticks more often than the hour the stamp allows" 1 "$(grep -c '^OnCalendar=\*:0/15$' "$T2")"
+eq "collect unit: launchd runs the same words" "1 1" "$(grep -c '<string>collect</string>' "$T3") $(grep -c '<string>--hourly</string>' "$T3")"
+eq "collect unit: no run at load" 1 "$(grep -c 'RunAtLoad' "$T3")"
+rendered="$(sed -e "s|@LIBRARIAN@|/l|" -e "s|@CONFIG@|/c|" -e "s|@DEST@|h:/w|" -e "s|@LOG@|/log|" "$T3" "$T1")"
+eq "collect unit: every placeholder is the header's" 0 "$(printf '%s\n' "$rendered" | grep -c '@[A-Z]*@')"
+if command -v plutil >/dev/null 2>&1; then eq "collect unit: the plist parses" 0 "$(sed -e "s|@LIBRARIAN@|/l|" -e "s|@CONFIG@|/c|" -e "s|@DEST@|h:/w|" -e "s|@LOG@|/log|" "$T3" | plutil -lint - >/dev/null 2>&1; echo $?)"; fi
 printf 'host = "host1"\nstate_dir = "%s"\n' "$SD" > "$CONF"
 out="$(run)"; eq "no wiki_dir: exit 0, one line, no rsync" "1 1 0" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(lines "$out") $(grep -c . "$RLOG")"
 
