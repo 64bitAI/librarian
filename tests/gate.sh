@@ -84,6 +84,8 @@ print(*[x.getsockname()[1] for x in s])')"; set -- $ports
   eq "real bureau, a node not leading: the log" 1 "$(grep -c 'skipped, not the leader' "$TMP/out")"
   kill "$RN"; wait "$RN" 2>/dev/null; rm -rf "$RB"
   setconf "lease_gate = 1"
+else
+  echo "skipped: BUREAU_TEST_BIN unset, so the gate did not meet the real CLI"
 fi
 # the wrapper
 export LEASE_GATE_STAMP=2026-11-03
@@ -108,6 +110,8 @@ git init -q "$TMP/wiki"; printf 'wiki_dir = "%s"\nstate_dir = "%s"\ncollect_from
 run() { bash "$L" "$@" > "$TMP/out" 2>&1; echo $?; }
 eq "ingest with no exclude: refused" 2 "$(run ingest)"
 eq "the refusal names the setting" 1 "$(grep -c 'no exclude set' "$TMP/out")"
+printf 'alert_cmd = "cat >> %s/refused"\n' "$TMP" >> "$CONF"; eq "a refusal with an alert command: still 2" 2 "$(run ingest)"
+eq "a nightly refusal reaches someone" 1 "$(grep -c 'no exclude set' "$TMP/refused")"
 eq "dry run with no exclude: refused" 2 "$(run ingest --dry-run)"
 eq "collect with no exclude: refused" 2 "$(run collect)"
 eq "nothing written to the wiki" "" "$(git -C "$TMP/wiki" status --porcelain)"

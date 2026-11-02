@@ -1,0 +1,16 @@
+# librarian.toml: copy to ~/.config/librarian/librarian.toml and set this machine's paths. README.md describes each key.
+# The parser takes no comment after a quoted value.
+
+# The git wiki (required).
+wiki_dir = "/home/owner/wiki"
+# Required: unset, nothing is collected.
+collect_from = "/home/owner/.claude/projects"
+# The name chats are filed under.
+host = "this-machine"
+state_dir = "/home/owner/.local/state/librarian"
+
+# Required, and left unset here on purpose: ingest and collect refuse to run until you write your own. It is a regular
+# expression, matched case-insensitively, for the employer's folders, short names, forge and accounts. A folder, cwd, title,
+# account or agent type that matches is not collected and gets no digest. The real value belongs only in this private file.
+# Its form, with made-up names:
+# exclude = 'employerco|(?<![a-z0-9])wrk(?![a-z0-9])|forgeco'

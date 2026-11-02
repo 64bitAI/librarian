@@ -36,12 +36,13 @@ host_name() { envget LIBRARIAN_HOST "$(envget SWARM_MACHINE "$(hostname -s)")"; 
 local_url() { local u; u="$(envget BRAIN_LOCAL_URL http://127.0.0.1:11434)"; printf '%s\n' "${u%/}"; }
 
 # need_exclude: refuse (status 2, the config error) while exclude / BRAIN_EXCLUDE is unset or blank, so
-# no chat is copied or sent to a model before the owner has decided what stays out. Someone with nothing
-# to keep out says so with the regular expression that matches nothing: exclude = '(?!)'.
+# no chat is copied or sent to a model before the owner has decided what stays out. This refusal is the
+# protection: no value ships, and the real one belongs only in the machine's private config.
 need_exclude() {
   local v; v="$(envget BRAIN_EXCLUDE)"
   case "$v" in *[![:space:]]*) return 0 ;; esac
-  echo "no exclude set: refusing to run. Set exclude in librarian.toml to the work you must keep out; with nothing to keep out, exclude = '(?!)'" >&2
+  echo "no exclude set: refusing to run. Set exclude in librarian.toml to the work you must keep out; librarian.toml.example shows the form" >&2
+  [ -z "$(envget LIBRARIAN_ALERT_CMD)" ] || alert "librarian on $(host_name): no exclude set, so nothing was collected or ingested"
   exit 2
 }
 
