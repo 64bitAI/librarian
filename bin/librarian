@@ -8,6 +8,8 @@
 #   librarian [--config FILE] status    last run, this month's spend against the cap, the queues
 #   librarian [--config FILE] lease-gate JOB hour|day|week|month [--run CMD...]
 #                                       with lease_gate = 1, only on the Bureau leader, once a slot
+#   librarian [--config FILE] exclude-check PATH...
+#                                       exit 0 only if exclude covers every path; prints a count only
 #   librarian version                   the version
 # The config is FILE, else LIBRARIAN_CONFIG, else ~/.config/librarian/librarian.toml (optional).
 # See README.md for the settings and the wiki layout it expects.
@@ -19,7 +21,7 @@ while [ -L "$self" ]; do
 done
 LIBRARIAN_HOME="$(cd "$(dirname "$self")/.." && pwd)"; export LIBRARIAN_HOME
 
-usage() { sed -n '2,12p' "$self" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,14p' "$self" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --config) [ $# -ge 2 ] || usage; export LIBRARIAN_CONFIG="$2"; shift 2 ;;
@@ -33,6 +35,7 @@ case "$cmd" in
   ingest) exec bash "$LIBRARIAN_HOME/lib/ingest.sh" run "$@" ;;
   status) exec bash "$LIBRARIAN_HOME/lib/ingest.sh" status "$@" ;;
   lease-gate) exec bash "$LIBRARIAN_HOME/lib/lease-gate.sh" "$@" ;;
+  exclude-check) exec bash "$LIBRARIAN_HOME/lib/exclude-check.sh" "$@" ;;
   version|--version) echo "librarian $(cat "$LIBRARIAN_HOME/VERSION")" ;;
   help|-h|--help) usage ;;
   *) usage ;;
