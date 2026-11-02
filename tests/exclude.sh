@@ -64,4 +64,39 @@ eq "exclude-check: it says how many, and no path" "1 of 2 excluded" "$out"
 eq "exclude-check: a path with no args is a usage error" 2 "$(bash "$L" exclude-check >/dev/null 2>&1; echo $?)"
 sed -i.bak "/^exclude = /d" "$CONF"; rm -f "$CONF.bak"
 eq "exclude-check: no exclude set, refused" 2 "$(bash "$L" exclude-check /x >/dev/null 2>&1; echo $?)"
+# exclude-check says what collect does, whichever form the exclude takes. A chat with no cwd line has only its folder to go
+# on, and that name has lost every / and . of the path: an exclude written as a literal path must still catch it.
+sed "/^exclude = /d" "$CONF" > "$CONF.base"
+case_n=0
+agree() { # agree EXCLUDE PATH WANT_RC WANT_COPIED: the real collect beside the real exclude-check
+  local want_rc="$3" want_copied="$4" folder got copied rc
+  case_n=$((case_n + 1))
+  { printf "exclude = '%s'\n" "$1"; cat "$CONF.base"; } > "$CONF"
+  folder="$(PYTHONPATH="$SRC/lib" python3 -c 'import sys, brain_digest as b; print(b.folder_of(sys.argv[1]))' "$2")"
+  rm -rf "$HOME/.claude/projects" "$TMP/wiki/raw/chats"; mkdir -p "$HOME/.claude/projects/$folder" "$TMP/wiki/raw/chats"
+  printf '{"type":"user","message":{"role":"user","content":"hello"}}\n' > "$HOME/.claude/projects/$folder/nocwd$case_n.jsonl"
+  printf '{"type":"user","cwd":"%s","message":{"role":"user","content":"hello"}}\n' "$2" > "$HOME/.claude/projects/$folder/cwd$case_n.jsonl"
+  bash "$L" exclude-check "$2" >/dev/null 2>&1; rc=$?
+  bash "$L" collect >/dev/null 2>&1
+  copied="$(find "$TMP/wiki/raw/chats" -name '*.jsonl' | wc -l | tr -d ' ')"
+  eq "case $case_n: exclude-check exit" "$want_rc" "$rc"
+  eq "case $case_n: collect copied" "$want_copied" "$copied"
+}
+W=/Users/o/src/github.com/employerco/next
+agree '/Users/o/src/github.com/employerco' "$W" 0 0                          # the review's case: a literal root, an unescaped dot
+agree '/Users/o/src/github\.com/employerco' "$W" 0 0                         # the same, escaped
+agree '/Users/o/src/github.com/employerco' /Users/o/src/github.com/other 1 2 # a sibling of the root is the owner's
+agree '/Users/o/src/github.com/employerco' /Users/o/src/personal 1 2
+agree 'employerco' "$W" 0 0                                                  # a bare word, as before
+agree '^/Users/o/src/employer_co(/|$)' /Users/o/src/employer_co/x 0 0        # anchored, a group, an underscore
+agree '(?:/Users/o/work|employerco)' /Users/o/work/x 0 0                     # a group's own colon stays syntax
+agree 'employer:co' /Users/o/employer:co/x 0 0                               # a literal colon does not survive in the folder
+agree '/Users/o/[ew]mployer.co' /Users/o/employer.co/x 0 0                   # classes and wildcards still work
+agree '(?<![a-z0-9])wrk(?![a-z0-9])' /Users/o/src/homewrkshop 1 2            # the short name inside a word is not the employer
+agree 'employerco' /tmp/scratch 0 0                                          # a temp folder is not collected either
+eq "exclude-check: a trailing slash changes nothing" 0 "$(printf "exclude = 'employerco'\n" | cat - "$CONF.base" > "$CONF"; bash "$L" exclude-check "$W/" >/dev/null 2>&1; echo $?)"
+# The digest pass decides the same on the brain's host, from the folder in a chat's header.
+rx='/Users/o/src/github\.com/employerco'
+eq "digest: a literal root catches the folder form" True "$(dig "-Users-o-src-github-com-employerco-next")"
+eq "digest: and not a sibling" False "$(dig "-Users-o-src-github-com-other")"
 if [ "$(nfails)" -eq 0 ]; then echo "all ok"; else echo "$(nfails) failed"; exit 1; fi

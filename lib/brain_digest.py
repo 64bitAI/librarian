@@ -33,6 +33,7 @@ digest, so an edited note comes back and an unchanged one does not. State lives 
 digests.json, ingested.json); the month's spend in state/costs.json, which the job commits. Nothing here prints digest contents.
 """
 import datetime
+import functools
 import hashlib
 import json
 import os
@@ -171,7 +172,7 @@ def header_fields(text):
 
 
 def excluded(rx, text, *extra):
-    return any(rx.search(f) for f in list(extra) + header_fields(text) if f)
+    return any(name_excluded(rx, f) for f in list(extra) + header_fields(text) if f)
 
 
 def agent_type(path):
@@ -350,8 +351,47 @@ def temp_folder(name):
         or bool(_SCRATCH_FOLDER.search(name))
 
 
+_RX_TOKEN = re.compile(r"""
+    (?P<keep>\(\?(?:P<\w+>|P=\w+\)|<[=!]|[=!]|[a-zA-Z-]*[:)]) | \{\d*,?\d*\} | \\[A-Za-z0-9])   # syntax, not text
+  | (?P<cls>\[\^?\]?(?:\\.|[^\]\\])*\])
+  | (?P<lit>\\. | [^A-Za-z0-9.^$*+?|()\[\]{}\\])                                                 # text no folder name keeps
+""", re.X | re.S)
+
+
+def _folder_token(m):
+    if m.group("keep"):
+        return m.group("keep")
+    if m.group("lit"):
+        return "-"
+    c = m.group("cls")
+    plain = re.fullmatch(r"\[\^?(?:[A-Za-z0-9]|[A-Za-z0-9]-[A-Za-z0-9])*\]", c)
+    return c if plain or c.startswith("[^") else c[:-1] + r"\-]"
+
+
+@functools.lru_cache(maxsize=8)
+def folder_form(rx):
+    """The exclude as it reads against a project folder name, where every character but a letter or digit is a dash (see
+    folder_of), so that a literal path in it still matches a folder: /a/b\\.c reads -a-b-c. A form that does not compile
+    is the exclude itself; exclude-check shows what that leaves."""
+    try:
+        return re.compile(_RX_TOKEN.sub(_folder_token, rx.pattern), rx.flags)
+    except re.error:
+        return rx
+
+
+def name_excluded(rx, name):
+    """The exclude against a path, a project folder name or a title, as written or in folder form."""
+    return bool(rx.search(name) or folder_form(rx).search(name))
+
+
+def folder_refused(rx, name):
+    """collect's own decision on a project folder: every chat in it stays here, whether or not it has a cwd line. What
+    exclude-check reports, so that the check cannot pass while a chat is copied."""
+    return name_excluded(rx, name) or temp_folder(name)
+
+
 def folder_excluded(rx, cwd):
-    return bool(rx.search(cwd) or rx.search(folder_of(cwd)))
+    return bool(rx.search(cwd) or name_excluded(rx, folder_of(cwd)))
 
 
 def folder_blocked(rx, cwd):
@@ -404,7 +444,7 @@ def collect_claude(rx, top):
     goes with its subagents; a subagent whose agentType (agent_type) is excluded stays here."""
     for proj in _ls(top):
         pd = os.path.join(top, proj)
-        if not os.path.isdir(pd) or rx.search(proj) or temp_folder(proj):
+        if not os.path.isdir(pd) or folder_refused(rx, proj):
             continue
         for fn in _ls(pd):
             p = os.path.join(pd, fn)

@@ -74,7 +74,9 @@ the `BRAIN_*` and `SWARM_BRAIN_LOCK_*` settings. Any UPPERCASE key in the file i
 under its own name (for example `BRAIN_INGEST_CHARS = 70000` or `BRAIN_COST_CAP_2026_10 = 20`).
 `lib/ingest.sh` lists every knob. `exclude` is required and none ships: `ingest` and `collect` exit 2 without it,
 before reading a chat. The real value belongs only in the machine's private config. To check it on that machine,
-`librarian exclude-check PATH...` exits 0 only if every path is excluded, and prints a count, never the paths or the terms.
+`librarian exclude-check PATH...` exits 0 only if `collect` would leave every chat in that path's project folder here, one
+with no `cwd` line too, and prints a count, never the paths or the terms. An exclude may name bare words or literal paths:
+it is also read against the folder's form of the name, where every character but a letter or digit is a dash.
 
 Running on more than one machine with Bureau: `lease_gate = 1`
 (with `bureau_bin` and `bureau_config` if needed) lets the ingest run only where `bureau lease is-leader`
