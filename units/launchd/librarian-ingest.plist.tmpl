@@ -14,6 +14,14 @@
     <string>librarian.ingest</string>
     <key>ProgramArguments</key>
     <array>
+        <!-- the lease gate: a pass-through until lease_gate = 1 -->
+        <string>@LIBRARIAN@</string>
+        <string>--config</string>
+        <string>@CONFIG@</string>
+        <string>lease-gate</string>
+        <string>ingest</string>
+        <string>day</string>
+        <string>--run</string>
         <string>@LIBRARIAN@</string>
         <string>--config</string>
         <string>@CONFIG@</string>

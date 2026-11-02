@@ -9,6 +9,8 @@ Description=librarian ingest
 [Service]
 Type=oneshot
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# A pass-through until lease_gate = 1; needs systemd 243 or later.
+ExecCondition=@LIBRARIAN@ --config @CONFIG@ lease-gate ingest day
 ExecStart=@LIBRARIAN@ --config @CONFIG@ ingest
 # Stage A is bounded by BRAIN_LOCAL_MAX_SECONDS (an hour); the whole run never past two.
 TimeoutStartSec=2h
