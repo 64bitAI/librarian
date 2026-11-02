@@ -57,7 +57,7 @@ overlapping runs. Other tools that write into the wiki can take the same lock.
 wiki_dir = "/home/me/wiki"           # the git wiki (required)
 collect_from = "/home/me/.claude/projects"   # required: unset, nothing is collected
 host = "laptop"                      # the name chats are filed under; default the host name
-exclude = 'acme|(?<![a-z0-9])acme-'  # a regex: work folders, titles and accounts never collected
+exclude = 'acme|(?<![a-z0-9])acme-'  # required, a regex: work folders, titles and accounts never collected
 budget_usd = 10                      # monthly cap for both stages
 condense = "auto"                    # auto | claude | local
 condense_model = "sonnet"
@@ -72,8 +72,13 @@ gate_cmd = ""                        # a script (run with bash WIKI) to use inst
 The environment beats the file. The older names still work: `SWARM_BRAIN_DIR` for the wiki and
 the `BRAIN_*` and `SWARM_BRAIN_LOCK_*` settings. Any UPPERCASE key in the file is passed through
 under its own name (for example `BRAIN_INGEST_CHARS = 70000` or `BRAIN_COST_CAP_2026_10 = 20`).
-`lib/ingest.sh` lists every knob. There is no default exclusion: set `exclude` if you use Claude for
-work you must keep out.
+`lib/ingest.sh` lists every knob. There is no default exclusion and `exclude` is required: `ingest` and
+`collect` exit 2 without it, before reading a chat. With nothing to keep out, say so: `exclude = '(?!)'`
+matches nothing.
+
+Running on more than one machine with Bureau: `lease_gate = 1`
+(with `bureau_bin` and `bureau_config` if needed) lets the ingest run only where `bureau lease is-leader`
+says so, once a day. Off by default, and then the gate only passes through.
 
 ## CLI
 

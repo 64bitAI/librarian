@@ -29,6 +29,7 @@ while [ $# -gt 0 ]; do
     *) echo "usage: librarian collect [--hourly] [--to DEST [--rsh CMD]]" >&2; exit 2 ;;
   esac
 done
+need_exclude
 SD="$(state_dir)"; mkdir -p "$SD"
 STAMP="$SD/.brain-collected"; LOCK="$SD/.brain-collect.lock"
 if [ -n "$hourly" ]; then

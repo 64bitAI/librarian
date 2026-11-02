@@ -46,7 +46,7 @@
 # BRAIN_CONDENSE_CALL_MAX_USD (0.5); local_url / BRAIN_LOCAL_URL (http://127.0.0.1:11434),
 # local_model / BRAIN_LOCAL_MODEL (qwen2.5:14b-instruct), BRAIN_LOCAL_CHUNK_TOKENS (12000),
 # BRAIN_LOCAL_MAX_SECONDS (3600, then the rest waits for the next night), exclude / BRAIN_EXCLUDE (a
-# regular expression; empty excludes nothing); stage B: BRAIN_INGEST_CHARS (120000 characters of
+# regular expression, required: unset or blank, ingest and collect refuse; '(?!)' excludes nothing); stage B: BRAIN_INGEST_CHARS (120000 characters of
 # notes), ingest_model / BRAIN_INGEST_MODEL (sonnet), BRAIN_INGEST_TURNS (60); git: the pull rebases
 # and a failed push is retried after a rebase (3 attempts, BRAIN_PUSH_RETRY_SLEEP seconds apart,
 # default 2), so a note pushed from another clone during the run is kept. Alerts go to alert_cmd.
@@ -107,7 +107,8 @@ case "${1:-run}" in
     echo "owner notes (raw/notes): $on queued, $oc characters, merged before any chat; $ou not committed (they wait for a commit)"
     exit 0 ;;
   run)
-    case "${2:-}" in "") ;; --dry-run) DRY=1 ;; *) echo "usage: librarian ingest [--dry-run]" >&2; exit 2 ;; esac ;;
+    case "${2:-}" in "") ;; --dry-run) DRY=1 ;; *) echo "usage: librarian ingest [--dry-run]" >&2; exit 2 ;; esac
+    need_exclude ;;
   *) echo "usage: $0 [run [--dry-run]|status]" >&2; exit 2 ;;
 esac
 

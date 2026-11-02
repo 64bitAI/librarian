@@ -177,7 +177,7 @@ eq "collect unit: no run at load" 1 "$(grep -c 'RunAtLoad' "$T3")"
 rendered="$(sed -e "s|@LIBRARIAN@|/l|" -e "s|@CONFIG@|/c|" -e "s|@DEST@|h:/w|" -e "s|@LOG@|/log|" "$T3" "$T1")"
 eq "collect unit: every placeholder is the header's" 0 "$(printf '%s\n' "$rendered" | grep -c '@[A-Z]*@')"
 if command -v plutil >/dev/null 2>&1; then eq "collect unit: the plist parses" 0 "$(sed -e "s|@LIBRARIAN@|/l|" -e "s|@CONFIG@|/c|" -e "s|@DEST@|h:/w|" -e "s|@LOG@|/log|" "$T3" | plutil -lint - >/dev/null 2>&1; echo $?)"; fi
-printf 'host = "host1"\nstate_dir = "%s"\n' "$SD" > "$CONF"
+printf 'host = "host1"\nstate_dir = "%s"\nexclude = "wrk"\n' "$SD" > "$CONF"
 out="$(run)"; eq "no wiki_dir: exit 0, one line, no rsync" "1 1 0" "$(printf '%s\n' "$out" | grep -c '^rc=0$') $(lines "$out") $(grep -c . "$RLOG")"
 
 # --- the ingest collects before its gate ----------------------------------------------------------------

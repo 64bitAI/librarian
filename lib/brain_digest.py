@@ -148,9 +148,10 @@ def strict(text):
 
 # Work material never enters the brain (its CLAUDE.md, Identity): a session whose project folder,
 # cwd or title, or a conversation whose account or title, matches BRAIN_EXCLUDE (one regular
-# expression, case-insensitive) gets no digest at all. There is no default: unset or empty
-# excludes nothing, so set BRAIN_EXCLUDE (exclude in librarian.toml) to your employer's folders,
-# forge and account names.
+# expression, case-insensitive) gets no digest at all. There is no default, and `librarian ingest`
+# and `collect` refuse to run without one (need_exclude): set BRAIN_EXCLUDE (exclude in
+# librarian.toml) to your employer's folders, forge and account names. Called directly, unset or
+# empty excludes nothing.
 NOTHING = r"(?!)"  # matches nothing
 
 
