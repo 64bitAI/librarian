@@ -47,8 +47,11 @@ export LEASE_GATE_STAMP=2026-11-03
 eq "wrapper: runs the job" "0 yes" "$(gate ingest day --run /usr/bin/touch "$TMP/ran") $([ -f "$TMP/ran" ] && echo yes)"
 rm -f "$TMP/ran"; echo 1 > "$TMP/leader"; export LEASE_GATE_STAMP=2026-11-04
 eq "wrapper: a skip exits clean, no job" "0 no" "$(gate ingest day --run /usr/bin/touch "$TMP/ran") $([ -f "$TMP/ran" ] && echo yes || echo no)"
-eq "a bad slot is refused" 2 "$(gate ingest fortnight)"
-eq "extra words are refused" 2 "$(gate ingest day extra)"
+eq "a bad slot is a failure to systemd, not a skip" 255 "$(gate ingest fortnight)"
+eq "extra words too" 255 "$(gate ingest day extra)"
+printf 'wiki_dir "broken"\n' > "$CONF"
+eq "a broken config with the gate off: a failure, not a skip" 255 "$(gate ingest day)"
+rm -f "$TMP/ran"; eq "a broken config under the wrapper: the job runs and reports it" "0 yes" "$(gate ingest day --run /usr/bin/touch "$TMP/ran") $([ -f "$TMP/ran" ] && echo yes)"
 unset LEASE_GATE_STAMP
 # the units
 S="$SRC/units/systemd/librarian-ingest.service.tmpl"; P="$SRC/units/launchd/librarian-ingest.plist.tmpl"

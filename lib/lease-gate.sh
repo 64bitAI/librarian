@@ -8,16 +8,23 @@
 # second run, so a new leader or a timer catching up does not repeat one. A slot is spent when the run starts: a failed run
 # is not retried here, and running the job by hand never passes through this gate. An unreadable history falls back to the stamp.
 # Keeps to: bureau (lease_gate = 1 in the config; bureau_bin), bureau_config, stamps in state_dir.
+# A broken call or setting is 255, which systemd counts as a failure: any other exit from ExecCondition would be a quiet skip.
 set -uo pipefail
 . "$(dirname "$0")/common.sh"
+# A config that does not read: not a skip. systemd sees the failure; the wrapper runs the job, which fails as it always did.
+if ! ( load_config ); then
+  while [ $# -gt 0 ] && [ "$1" != --run ]; do shift; done
+  [ $# -ge 2 ] || exit 255
+  shift; exec "$@"
+fi
 load_config
 on="$(envget LIBRARIAN_LEASE_GATE 0)"; bin="$(envget LIBRARIAN_BUREAU_BIN bureau)"; conf="$(envget LIBRARIAN_BUREAU_CONFIG "")"
 state="$(state_dir)/lease-slots"; source_name=librarian
-[ $# -ge 2 ] || { echo "usage: librarian lease-gate JOB hour|day|week|month [--run CMD...]" >&2; exit 2; }
+[ $# -ge 2 ] || { echo "usage: librarian lease-gate JOB hour|day|week|month [--run CMD...]" >&2; exit 255; }
 job="$1"; slot="$2"; shift 2
 wrap=""
 if [ $# -gt 0 ]; then
-  [ "$1" = --run ] && [ $# -ge 2 ] || { echo "usage: librarian lease-gate JOB hour|day|week|month [--run CMD...]" >&2; exit 2; }
+  [ "$1" = --run ] && [ $# -ge 2 ] || { echo "usage: librarian lease-gate JOB hour|day|week|month [--run CMD...]" >&2; exit 255; }
   shift; wrap=1
 fi
 go() { if [ -n "$wrap" ]; then exec "$@"; fi; exit 0; }
@@ -27,7 +34,7 @@ case "$slot" in
   day) fmt=%Y-%m-%d; since=48h ;;
   week) fmt=%Y-W%U; since=192h ;;
   month) fmt=%Y-%m; since=800h ;;
-  *) echo "lease-gate: slot is hour, day, week or month" >&2; exit 2 ;;
+  *) echo "lease-gate: slot is hour, day, week or month" >&2; exit 255 ;;
 esac
 [ "$on" = 1 ] || go "$@"
 
