@@ -3,7 +3,8 @@
 #   librarian lease-gate JOB hour|day|week|month              exit 0 to run, 1 to skip: systemd's ExecCondition (1 is a skip, not a failure)
 #   librarian lease-gate JOB hour|day|week|month --run CMD... run CMD on a pass, exit 0 on a skip: launchd's wrapper, it has no ExecCondition
 # Off unless LIBRARIAN_LEASE_GATE=1: then it only passes through. Only the command decides: this never reads Bureau's leader file, and
-# every answer but 0 skips, so a machine with no node or a bad config runs nothing and its log says why.
+# every answer but 0 skips, so a machine with no node or a bad config runs nothing and its log says why. is-leader answers 1 for
+# "not the leader" and for no node alike; `bureau health --json` tells them apart for the log (no node: exit 3 and no report).
 # One run per slot: JOB and its slot are recorded in Bureau's replicated history and in a local stamp, and either skips a
 # second run, so a new leader or a timer catching up does not repeat one. A slot is spent when the run starts: a failed run
 # is not retried here, and running the job by hand never passes through this gate. An unreadable history falls back to the stamp.
@@ -43,16 +44,22 @@ bureau=("$bin")
 "${bureau[@]}" lease is-leader >/dev/null 2>&1; rc=$?
 case "$rc" in
   0) ;;
-  1) skip "not the leader" ;;
-  *) skip "bureau could not say (exit $rc): no node, or a bad config" ;;
+  1)
+    report="$("${bureau[@]}" health --json 2>/dev/null)"; hrc=$?
+    if [ "$hrc" = 3 ] && [ -z "$report" ]; then skip "no node is running here"; fi
+    skip "not the leader" ;;
+  *) skip "bureau could not say (exit $rc): no binary, or a bad config" ;;
 esac
 
 stamp="${LEASE_GATE_STAMP:-$(date +"$fmt")}"; key="$job $stamp"
-if "${bureau[@]}" history --kind slot --since "$since" --json 2>/dev/null | grep -qF "\"text\":\"$key\""; then
-  skip "$stamp already ran on another machine"
-fi
+# Read whole, then matched: with pipefail, grep -q leaving at the first match can kill the writer and turn found into not found.
+seen="$("${bureau[@]}" history --kind slot --since "$since" --json 2>/dev/null)"
+case "$seen" in *"\"text\":\"$key\""*) skip "$stamp already ran on another machine" ;; esac
 mkdir -p "$state/$job" 2>/dev/null
-mkdir "$state/$job/$stamp" 2>/dev/null || skip "$stamp already ran here"
+if ! mkdir "$state/$job/$stamp" 2>/dev/null; then
+  [ -d "$state/$job/$stamp" ] && skip "$stamp already ran here"
+  skip "could not write the slot stamp under $state, so nothing ran"
+fi
 find "$state/$job" -mindepth 1 -maxdepth 1 -type d -mtime +100 -exec rmdir {} + 2>/dev/null
 "${bureau[@]}" history add --kind slot --source "$source_name" "$key" >/dev/null 2>&1 || \
   printf '%s lease-gate %s: the slot is not recorded in Bureau; a takeover could repeat it\n' "$(date +%FT%T)" "$job"
