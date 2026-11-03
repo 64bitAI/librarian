@@ -102,7 +102,14 @@ unset LEASE_GATE_STAMP
 S="$SRC/units/systemd/librarian-ingest.service.tmpl"; P="$SRC/units/launchd/librarian-ingest.plist.tmpl"
 eq "ingest unit: ExecCondition" 1 "$(grep -c '^ExecCondition=@LIBRARIAN@ --config @CONFIG@ lease-gate ingest day$' "$S")"
 eq "ingest plist: wrapped" 1 "$(grep -c '<string>--run</string>' "$P")"
-if command -v plutil >/dev/null 2>&1; then eq "ingest plist parses" 0 "$(sed -e "s|@LIBRARIAN@|/l|" -e "s|@CONFIG@|/c|" -e "s|@LOG@|/g|" "$P" | plutil -lint - >/dev/null 2>&1; echo $?)"; fi
+if command -v plutil >/dev/null 2>&1; then eq "ingest plist parses" 0 "$(sed -e "s|@LIBRARIAN@|/l|" -e "s|@CONFIG@|/c|" -e "s|@LOG@|/g|" -e "s|@HOME@|/h|" "$P" | plutil -lint - >/dev/null 2>&1; echo $?)"; fi
+# the gate asks bureau and the ingest runs claude, both usually in ~/.local/bin, which launchd's PATH lacks
+eq "ingest plist: ~/.local/bin on PATH" 1 "$(grep -c '<string>@HOME@/.local/bin:/opt/homebrew/bin:' "$P")"
+# every placeholder in the plist body is one its header's render command replaces
+miss=""; for ph in $(sed '1,/-->/d' "$P" | grep -o '@[A-Z]*@' | sort -u); do
+  sed -n '1,/-->/p' "$P" | grep -q "s|$ph|" || miss="$miss $ph"
+done
+eq "ingest plist: the header renders every placeholder" "" "$miss"
 eq "collect is per machine: not gated" 0 "$(cat "$SRC"/units/*/librarian-collect.* | grep -c lease-gate)"
 # exclude is required
 printf '#!/bin/sh\nexit 97\n' > "$TMP/bin/claude"; chmod +x "$TMP/bin/claude"; export PATH="$TMP/bin:$PATH"

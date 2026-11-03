@@ -2,11 +2,12 @@
 <!--
   The nightly ingest on macOS (librarian ingest), a launchd agent. Render it with
     sed -e "s|@LIBRARIAN@|$(command -v librarian)|" -e "s|@CONFIG@|$HOME/.config/librarian/librarian.toml|" \
-      -e "s|@LOG@|$HOME/Library/Logs/librarian-ingest.log|" \
+      -e "s|@LOG@|$HOME/Library/Logs/librarian-ingest.log|" -e "s|@HOME@|$HOME|" \
       units/launchd/librarian-ingest.plist.tmpl > ~/Library/LaunchAgents/librarian.ingest.plist
   then: launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/librarian.ingest.plist
   Run now: launchctl kickstart -p gui/$(id -u)/librarian.ingest
-  04:15 local. RunAtLoad is false so loading it does not fire a run.
+  04:15 local. RunAtLoad is false so loading it does not fire a run. With Bureau, set lease_gate = 1 in the config
+  before loading it on a second machine, or both machines ingest.
 -->
 <plist version="1.0">
 <dict>
@@ -29,9 +30,9 @@
     </array>
     <key>EnvironmentVariables</key>
     <dict>
-        <!-- launchd gives a minimal PATH; claude, git and python3 live in Homebrew or ~/.local/bin -->
+        <!-- launchd gives a minimal PATH and expands no ~; claude and bureau usually live in ~/.local/bin, git and python3 in Homebrew -->
         <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>@HOME@/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
     <key>StartCalendarInterval</key>
     <dict>
