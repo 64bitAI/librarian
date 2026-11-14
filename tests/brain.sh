@@ -755,6 +755,11 @@ eq "gate: that night's run pulls and merges it" "0 1" "$(job run) $(grep -c '^- 
 eq "gate: then it shuts" 10 "$(bash "$SRC/lib/gate.sh" "$BR" >/dev/null; echo $?)"
 g remote set-url origin "$TMP/no-such-origin.git"
 eq "gate: an unreachable remote fails open to what it has" 10 "$(bash "$SRC/lib/gate.sh" "$BR" >/dev/null 2>&1; echo $?)"
+# a remote that hangs: the fetch is cut off at BRAIN_GATE_FETCH_SECONDS and the gate answers from what it has
+printf '#!/bin/sh\nexec sleep 30\n' > "$TMP/hang-ssh"; chmod +x "$TMP/hang-ssh"
+g remote set-url origin "hang.invalid:brain.git"; t0=$(date +%s)
+eq "gate: a hanging remote is cut off and fails open" 10 "$(GIT_SSH_COMMAND="$TMP/hang-ssh" BRAIN_GATE_FETCH_SECONDS=1 bash "$SRC/lib/gate.sh" "$BR" >/dev/null 2>&1; echo $?)"
+eq "gate: ... within the bound, not the hang" yes "$([ $(( $(date +%s) - t0 )) -lt 10 ] && echo yes || echo no)"
 g remote set-url origin "$OR"
 
 # --- the pull and the pushes rebase: a report pushed from another clone is not lost ---------------------
